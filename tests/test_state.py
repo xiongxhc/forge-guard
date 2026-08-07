@@ -16,3 +16,17 @@ def test_flag_once():
     st = State.load("/nonexistent/x.json")
     assert st.flag_once("usermap:alice") is True
     assert st.flag_once("usermap:alice") is False
+
+def test_save_bare_filename(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    st = State()
+    st.set_tip(2, "dev", "xyz")
+    st.save("flat.json")
+    st2 = State.load("flat.json")
+    assert st2.get_tip(2, "dev") == "xyz"
+
+def test_load_corrupt_json(tmp_path):
+    p = tmp_path / "corrupt.json"
+    p.write_text("{not json")
+    st = State.load(str(p))
+    assert st.get_tip(1, "main") is None

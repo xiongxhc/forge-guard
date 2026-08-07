@@ -14,7 +14,8 @@ class State:
             return cls()
 
     def save(self, path: str) -> None:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if (d := os.path.dirname(path)):
+            os.makedirs(d, exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.d, f, indent=1)
