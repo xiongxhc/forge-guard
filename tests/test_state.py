@@ -1,0 +1,18 @@
+from forgeguard.state import State
+
+def test_roundtrip_and_atomic_write(tmp_path):
+    p = str(tmp_path / "deep" / "state.json")
+    st = State.load(p)
+    assert st.get_tip(1, "main") is None
+    st.set_tip(1, "main", "abc")
+    st.set_cursor("mr_updated_after", "2026-08-07T00:00:00Z")
+    st.save(p)
+    st2 = State.load(p)
+    assert st2.get_tip(1, "main") == "abc"
+    assert st2.get_cursor("mr_updated_after") == "2026-08-07T00:00:00Z"
+    assert not list(tmp_path.glob("**/*.tmp"))
+
+def test_flag_once():
+    st = State.load("/nonexistent/x.json")
+    assert st.flag_once("usermap:alice") is True
+    assert st.flag_once("usermap:alice") is False
