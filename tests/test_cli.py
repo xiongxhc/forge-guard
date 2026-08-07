@@ -31,7 +31,7 @@ def test_first_run_records_tip_silently(tmp_path):
     cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
     st, fk = State.load(cfg.state_path), FakeFeishu()
     out = run_sweep(GitLab(cfg), st, fk, cfg)
-    assert out == {"projects": 1, "protected": 0, "force_push": 0, "unmr": 0}
+    assert out == {"projects": 1, "protected": 0, "force_push": 0, "unmr": 0, "errors": 0}
     assert st.get_tip(7, "main") == "t1"
     assert fk.sent == []
 
@@ -48,3 +48,27 @@ def test_force_push_alerts(tmp_path):
     assert "FORCE PUSH" in fk.sent[0][0]
     assert "https://gitlab.example.com/" in fk.sent[0][0]
     assert st.get_tip(7, "main") == "t2"
+
+@responses.activate
+def test_failing_project_tolerated_and_alerted(tmp_path):
+    responses.get(f"{API}/projects", json=[
+        {"id": 7, "path_with_namespace": "g/bad",
+         "web_url": "https://gitlab.internal.example/g/bad"},
+        {"id": 8, "path_with_namespace": "g/app",
+         "web_url": "https://gitlab.internal.example/g/app"}],
+        headers={"X-Next-Page": ""})
+    responses.get(f"{API}/projects/7/repository/branches",
+                  json={"message": "403 Forbidden"}, status=403)
+    responses.get(f"{API}/projects/8/repository/branches", json=[
+        {"name": "main", "commit": {"id": "t1", "author_name": "alice"}}])
+    responses.get(f"{API}/projects/8/protected_branches/main", json={
+        "name": "main", "allow_force_push": False,
+        "push_access_levels": [{"access_level": 0}],
+        "merge_access_levels": [{"access_level": 30}]})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    out = run_sweep(GitLab(cfg), st, fk, cfg)
+    assert out == {"projects": 2, "protected": 0, "force_push": 0, "unmr": 0, "errors": 1}
+    assert st.get_tip(8, "main") == "t1"
+    assert len(fk.sent) == 1
+    assert "1 project(s) failed" in fk.sent[0][0]

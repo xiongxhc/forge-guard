@@ -47,7 +47,7 @@ def _render_note(v: dict) -> str:
     return "\n".join(lines)
 
 def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config) -> dict:
-    out = {"reviewed": 0, "skipped_large": 0}
+    out = {"reviewed": 0, "skipped_large": 0, "failed": 0}
     params = {"scope": "all", "state": "opened"}
     cursor = state.get_cursor("mr_updated_after")
     if cursor:
@@ -56,46 +56,52 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config) -> dict:
            if m["target_branch"] in cfg.branches]
     max_updated = cursor or ""
     projects: dict[int, dict] = {}
-    for mr in mrs:
-        pid, iid, sha = mr["project_id"], mr["iid"], mr["sha"]
-        project = projects.setdefault(pid, gl.get(f"/projects/{pid}"))
-        if project["path_with_namespace"] in cfg.exclude:
-            continue
-        if state.get_cursor(f"reviewed:{pid}:{iid}") == sha:
-            max_updated = max(max_updated, mr["updated_at"])
-            continue
-        changes = gl.get(f"/projects/{pid}/merge_requests/{iid}/changes")
-        diff = "\n".join(c.get("diff", "") for c in changes.get("changes", []))
-        mr_url = rebase_url(mr["web_url"], cfg.gitlab_url)
-        commit_url = rebase_url(f"{project['web_url']}/-/commit/{sha}", cfg.gitlab_url)
-        if len(diff.encode()) > cfg.diff_cap_bytes:
-            _upsert_note(gl, pid, iid, f"{MARKER}\nMR too large for auto-review "
-                                       f"({len(diff.encode())} bytes > cap).")
-            out["skipped_large"] += 1
-        else:
-            v = run_claude(PROMPT.format(title=mr["title"], target=mr["target_branch"],
-                                         description=mr.get("description") or "",
-                                         diff=diff))
-            _upsert_note(gl, pid, iid, _render_note(v))
-            if v["verdict"] == "clean":
-                try:
-                    gl.post(f"/projects/{pid}/merge_requests/{iid}/approve")
-                except GitLabError:
-                    pass
-            author = mr["author"]["username"]
-            feishu.notify(
-                f"📝 review {v['verdict']}: {mr['title']}\n{v['summary']}\n"
-                f"MR: {mr_url}\ncommit: {commit_url}",
-                at_gitlab_user=author)
-            if author not in feishu.usermap and state.flag_once(f"usermap:{author}"):
-                feishu.notify(f"ℹ️ no Feishu mapping for GitLab user '{author}' — "
-                              f"add to forge-guard-usermap.json to enable @mentions")
-            out["reviewed"] += 1
-        state.set_cursor(f"reviewed:{pid}:{iid}", sha)
-        max_updated = max(max_updated, mr["updated_at"])
-    if max_updated:
-        state.set_cursor("mr_updated_after", max_updated)
-    state.save(cfg.state_path)
+    try:
+        for mr in mrs:
+            pid, iid, sha = mr["project_id"], mr["iid"], mr["sha"]
+            try:
+                project = projects.setdefault(pid, gl.get(f"/projects/{pid}"))
+                if project["path_with_namespace"] in cfg.exclude:
+                    continue
+                if state.get_cursor(f"reviewed:{pid}:{iid}") == sha:
+                    max_updated = max(max_updated, mr["updated_at"])
+                    continue
+                changes = gl.get(f"/projects/{pid}/merge_requests/{iid}/changes")
+                diff = "\n".join(c.get("diff", "") for c in changes.get("changes", []))
+                mr_url = rebase_url(mr["web_url"], cfg.gitlab_url)
+                commit_url = rebase_url(f"{project['web_url']}/-/commit/{sha}", cfg.gitlab_url)
+                if len(diff.encode()) > cfg.diff_cap_bytes:
+                    _upsert_note(gl, pid, iid, f"{MARKER}\nMR too large for auto-review "
+                                               f"({len(diff.encode())} bytes > cap).")
+                    out["skipped_large"] += 1
+                else:
+                    v = run_claude(PROMPT.format(title=mr["title"], target=mr["target_branch"],
+                                                 description=mr.get("description") or "",
+                                                 diff=diff))
+                    _upsert_note(gl, pid, iid, _render_note(v))
+                    if v["verdict"] == "clean":
+                        try:
+                            gl.post(f"/projects/{pid}/merge_requests/{iid}/approve")
+                        except GitLabError:
+                            pass
+                    author = mr["author"]["username"]
+                    feishu.notify(
+                        f"📝 review {v['verdict']}: {mr['title']}\n{v['summary']}\n"
+                        f"MR: {mr_url}\ncommit: {commit_url}",
+                        at_gitlab_user=author)
+                    if author not in feishu.usermap and state.flag_once(f"usermap:{author}"):
+                        feishu.notify(f"ℹ️ no Feishu mapping for GitLab user '{author}' — "
+                                      f"add to forge-guard-usermap.json to enable @mentions")
+                    out["reviewed"] += 1
+                state.set_cursor(f"reviewed:{pid}:{iid}", sha)
+                max_updated = max(max_updated, mr["updated_at"])
+            except (RuntimeError, KeyError, GitLabError):
+                out["failed"] += 1
+                continue
+        if max_updated and out["failed"] == 0:
+            state.set_cursor("mr_updated_after", max_updated)
+    finally:
+        state.save(cfg.state_path)
     return out
 
 def inject_gate(gl: GitLab, cfg: Config, apply: bool) -> int:

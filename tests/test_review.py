@@ -38,7 +38,7 @@ def test_review_tick_posts_note_approves_and_notifies(tmp_path):
     verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "has tests"}
     with patch("forgeguard.review.run_claude", return_value=verdict):
         out = run_review_tick(GitLab(cfg), st, fk, cfg)
-    assert out == {"reviewed": 1, "skipped_large": 0}
+    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0}
     assert fk.sent[0][1] == "alice"
     assert "https://gitlab.example.com/g/app/-/merge_requests/5" in fk.sent[0][0]
     assert "https://gitlab.example.com/g/app/-/commit/head1" in fk.sent[0][0]
@@ -63,4 +63,38 @@ def test_oversized_diff_skipped(tmp_path):
     responses.post(f"{API}/projects/7/merge_requests/6/notes", json={"id": 2})
     cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
     out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
-    assert out == {"reviewed": 0, "skipped_large": 1}
+    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0}
+
+@responses.activate
+def test_failing_mr_skipped_cursor_held(tmp_path):
+    responses.get(f"{API}/merge_requests", json=[
+        {"iid": 5, "project_id": 7, "sha": "h1", "title": "bad", "description": "",
+         "target_branch": "main", "author": {"username": "alice"},
+         "updated_at": "2026-08-07T10:00:00Z",
+         "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/5"},
+        {"iid": 6, "project_id": 7, "sha": "h2", "title": "good", "description": "",
+         "target_branch": "main", "author": {"username": "bob"},
+         "updated_at": "2026-08-07T11:00:00Z",
+         "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/6"}],
+        headers={"X-Next-Page": ""})
+    responses.get(f"{API}/projects/7", json={
+        "path_with_namespace": "g/app",
+        "web_url": "https://gitlab.internal.example/g/app"})
+    responses.get(f"{API}/projects/7/merge_requests/5/changes",
+                  json={"changes": [{"diff": "+ a"}]})
+    responses.get(f"{API}/projects/7/merge_requests/6/changes",
+                  json={"changes": [{"diff": "+ b"}]})
+    responses.get(f"{API}/projects/7/merge_requests/6/notes", json=[],
+                  headers={"X-Next-Page": ""})
+    responses.post(f"{API}/projects/7/merge_requests/6/notes", json={"id": 3})
+    responses.post(f"{API}/projects/7/merge_requests/6/approve", json={})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st = State.load(cfg.state_path)
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude",
+               side_effect=[RuntimeError("claude died"), verdict]):
+        out = run_review_tick(GitLab(cfg), st, FakeFeishu(), cfg)
+    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 1}
+    assert st.get_cursor("reviewed:7:6") == "h2"
+    assert st.get_cursor("reviewed:7:5") is None
+    assert st.get_cursor("mr_updated_after") is None

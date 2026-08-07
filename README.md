@@ -77,7 +77,11 @@ launchd wrappers before the CLI runs.
    `~/.config/forge-guard/forge-guard-usermap.json`). Members with no
    entry still get alerted, just without the `@`-mention; forge-guard flags
    the missing mapping once per unmapped user.
-4. **Install the plists.** Copy each `.example` file from `launchd/` to
+4. **Install dependencies.** The launchd ticks run the checkout's virtualenv:
+   ```sh
+   cd forge-guard && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+   ```
+5. **Install the plists.** Copy each `.example` file from `launchd/` to
    `~/Library/LaunchAgents/`, stripping the `.example` suffix, substituting
    `__REPO__` for the absolute path to this checkout and `__HOME__` for
    your home directory:
@@ -90,7 +94,7 @@ launchd wrappers before the CLI runs.
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.forgeguard.sweep.plist
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.forgeguard.review.plist
    ```
-5. **Watch the first sweep** in `~/Library/Logs/ForgeGuard/sweep.log` and
+6. **Watch the first sweep** in `~/Library/Logs/ForgeGuard/sweep.log` and
    confirm protection/violation messages land in the Feishu group.
 
 ## Rollout order
