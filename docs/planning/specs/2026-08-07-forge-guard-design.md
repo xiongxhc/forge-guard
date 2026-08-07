@@ -41,12 +41,22 @@ For every project the token reaches:
 2. Ensure project setting `only_allow_merge_if_pipeline_succeeds=true` **only
    after** the project has the quality-gate CI include (lane 2), never before —
    flipping it on a project with no pipeline would block all merges.
-3. Detect violations since last tick via project push events: direct pushes to
-   target branches that landed before protection (or via owner override) are
-   reported, not reverted.
+3. Detect violations since last tick. The sweep stores each target branch's tip
+   SHA per project; on the next tick it classifies every tip movement:
+   - **Force push:** stored tip is no longer an ancestor of the new tip
+     (non-fast-forward move). Protection blocks these going forward, but Owners
+     and admins can override or briefly unprotect — every occurrence is caught
+     and alerted regardless of who did it.
+   - **Merge without MR:** for each new commit landed on a target branch, query
+     the commit's associated merge requests
+     (`/repository/commits/:sha/merge_requests`); commits with **no merged MR**
+     targeting that branch = a direct push or local merge — alerted with
+     pusher, branch, and rebased commit URL, @-mentioning the pusher in Feishu.
+   - Both are **reported, never auto-reverted** — reverting a shared branch is
+     its own incident.
 
-State: last-seen event cursor per project in a local SQLite/JSON state file.
-Every protection change, drift correction, and violation → Feishu alert.
+State: per-project branch-tip SHAs + last-seen event cursor in a local state
+file. Every protection change, drift correction, and violation → Feishu alert.
 Idempotent: a second run makes zero changes and sends zero alerts.
 
 ### Lane 2 — mechanical quality gate (hard; runs in GitLab CI, not on the Mac)
@@ -95,7 +105,8 @@ auto-review" note instead of a truncated hallucination-prone review.
   comments — is rebased: take the forge's *path*, force scheme+host to
   `https://gitlab.example.com/`. Same lesson as dev-agent M7.
 - Event → message matrix: review verdict (with URLs), gate failure, Gate-Skip
-  used, protection applied/drift corrected, direct-push violation, sweep error.
+  used, protection applied/drift corrected, **force push detected**, **merge
+  without MR detected** (both @pusher with commit URL), sweep error.
 
 ## Config (`~/.config/forge-guard/forge-guard.env`)
 
