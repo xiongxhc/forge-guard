@@ -8,6 +8,7 @@ from tests.test_config import BASE
 API = "https://gitlab.example.com/api/v4"
 
 class FakeFeishu:
+    usermap: dict = {}
     def __init__(self): self.sent = []
     def notify(self, text, at_gitlab_user=None): self.sent.append((text, at_gitlab_user))
 
