@@ -3,7 +3,7 @@ import os
 from dataclasses import dataclass
 from typing import Mapping
 
-_DEFAULT_BRANCHES = "main,master,prod,production,develop,uat"
+_DEFAULT_BRANCHES = "main,master,prod,production,develop,dev,uat"
 
 @dataclass(frozen=True)
 class Config:

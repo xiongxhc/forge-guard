@@ -12,7 +12,7 @@ BASE = {
 def test_defaults_and_required():
     cfg = load_config(BASE)
     assert cfg.gitlab_url == "https://gitlab.example.com"
-    assert cfg.branches == ["main", "master", "prod", "production", "develop", "uat"]
+    assert cfg.branches == ["main", "master", "prod", "production", "develop", "dev", "uat"]
     assert cfg.exclude == []
     assert cfg.diff_cap_bytes == 300_000
     assert cfg.state_path.endswith("forge-guard/state.json")
