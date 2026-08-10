@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, subprocess
+import json, os, shutil, subprocess
 from .config import Config
 from .gitlab import GitLab, GitLabError, rebase_url
 from .state import State
@@ -25,7 +25,14 @@ Diff:
 """
 
 def run_claude(prompt: str) -> dict:
-    r = subprocess.run(["claude", "-p", "--output-format", "text"],
+    # Absolute binary: launchd PATH lacks ~/.local/bin. Flags per fleet
+    # schedule-lib: without --strict-mcp-config --setting-sources= a scheduled
+    # claude -p loads the claude-mem MCP stack and deadlocks on shared chroma.
+    binary = (os.environ.get("FORGEGUARD_CLAUDE_BIN")
+              or shutil.which("claude")
+              or os.path.expanduser("~/.local/bin/claude"))
+    r = subprocess.run([binary, "-p", "--output-format", "text",
+                        "--strict-mcp-config", "--setting-sources="],
                        input=prompt, capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
         raise RuntimeError(f"claude exited {r.returncode}: {r.stderr[:200]}")
