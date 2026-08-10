@@ -1,0 +1,61 @@
+# ============================================================
+# quality-gate — forge-guard lane 2 (one copy, all repos)
+#
+# Fails the MR pipeline when the MR contains feature work
+# (feat: commits, or 3+ non-test source files) with zero
+# test-file changes. Escape hatch: a "Gate-Skip: <reason>"
+# commit trailer passes the gate but is audited (Feishu alert
+# from forge-guard's sweep).
+#
+# Minimal consumer .gitlab-ci.yml addition:
+#
+#   include:
+#     - project: acme-group/common/ci-tools
+#       ref: dev
+#       file: ci/quality-gate.gitlab-ci.yml
+#
+# Consumers whose pipeline lacks a `test` stage: override
+# `stage:` (same convention as mcp-drift), e.g.
+#
+#   quality-gate:
+#     stage: check
+#
+# (.pre is NOT used on purpose: GitLab refuses to create a
+# pipeline containing only .pre/.post jobs, and in most repos
+# this gate is the only merge_request_event job.)
+#
+# check_mr.py is
+# fetched at job time from THIS project's generic package
+# registry via CI_JOB_TOKEN (the only artifact type job tokens
+# may read cross-project) — each consumer project must be on
+# ci-tools' job-token allowlist (Settings → CI/CD → Job token
+# permissions, or API projects/75/job_token_scope/allowlist).
+# ============================================================
+quality-gate:
+  stage: test
+  image: alpine:3.20
+  variables:
+    QUALITY_GATE_TOOL_PROJECT: "75"  # acme-group/common/ci-tools
+    QUALITY_GATE_TOOL_REF: "dev"
+    GIT_STRATEGY: clone
+    GIT_DEPTH: "0"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - apk add --no-cache git python3 curl >/dev/null
+    - |
+      # Self-signed GitLab cert: trust the runner CA when exposed, else -k
+      # (internal-only host). Fetch is loud on failure — no silent -f.
+      if [ -n "$CI_SERVER_TLS_CA_FILE" ]; then CURL_CA="--cacert $CI_SERVER_TLS_CA_FILE"; else CURL_CA="-k"; fi
+      URL="$CI_API_V4_URL/projects/$QUALITY_GATE_TOOL_PROJECT/packages/generic/quality-gate/$QUALITY_GATE_TOOL_REF/check_mr.py"
+      code=$(curl -s $CURL_CA --header "JOB-TOKEN: $CI_JOB_TOKEN" -w "%{http_code}" -o check_mr.py "$URL")
+      if [ "$code" != "200" ]; then
+        echo "quality-gate tool fetch FAILED: HTTP $code from $URL"
+        echo "(403 = this project is missing from ci-tools' job-token allowlist)"
+        exit 1
+      fi
+      echo "fetched check_mr.py ($(wc -c < check_mr.py) bytes, ref $QUALITY_GATE_TOOL_REF)"
+    # No git network calls in the job (self-signed cert breaks bare git
+    # fetch): the diff base SHA is an ancestor of the checked-out MR head,
+    # so the full clone (GIT_DEPTH 0) already contains it.
+    - python3 check_mr.py "$CI_MERGE_REQUEST_DIFF_BASE_SHA"

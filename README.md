@@ -24,9 +24,10 @@ service — everything is a launchd tick against the GitLab API.
   once a project has the quality-gate CI include (lane 2) — flipping it
   earlier would block all merges on a project with no pipeline.
 - **Lane 2 — quality gate** (mechanical, runs in GitLab CI, not on the Mac).
-  A central `forge/quality-gate` CI template, injected into each project's
-  `.gitlab-ci.yml`, hard-fails MR pipelines that add feature commits with no
-  test-file changes, or that fail lint/build. Combined with
+  A central CI template living in `acme-group/common/ci-tools`
+  (`ci/quality-gate.gitlab-ci.yml`, following that repo's central-include
+  model), added to each project's `.gitlab-ci.yml`, hard-fails MR pipelines
+  that add feature commits with no test-file changes. Combined with
   `only_allow_merge_if_pipeline_succeeds`, this is the only lane that
   actually blocks a merge, and it has no dependency on the operator Mac.
   Escape hatch: a `Gate-Skip: <reason>` commit trailer makes the gate pass
@@ -106,9 +107,10 @@ The four lanes/steps go live in this order, not all at once:
 2. **Feishu group + alert wiring.**
 3. **AI review lane.**
 4. **Quality-gate CI include — last**, announced to the team first (it
-   touches every repo and changes merge behavior), and only after shared
-   runner availability is verified (`/api/v4/runners/all`) — with no
-   runners, gate pipelines would sit pending and block every merge.
+   touches every repo and changes merge behavior). Runner availability
+   verified and gate piloted live 2026-08-10 (see Limitations); the
+   fleet-wide include rollout (`inject-gate --apply`) is the remaining
+   step.
 
 ## Limitations
 
@@ -120,12 +122,20 @@ The four lanes/steps go live in this order, not all at once:
   approves clean MRs as a visible signal, but CE has no required-approval
   rule to hook it to — it's advisory, never a merge gate. Only the
   mechanical quality gate (lane 2) actually blocks a merge.
-- **Quality-gate deployment is pending runner verification.** Lane 2 is
-  built (`ci-template/gate.yml`, `inject-gate` CLI command) but not yet
-  rolled out to any project — office network was down during design, so
-  shared-runner availability is unverified. Rolling it out before runners
-  are confirmed would leave every gated project's pipelines stuck pending,
-  blocking all merges.
+- **Quality-gate is deployed and piloted, not yet fleet-wide.** The gate
+  lives in `acme-group/common/ci-tools` (`quality-gate/` tool +
+  `ci/quality-gate.gitlab-ci.yml` consumer template; `ci-template/` here is
+  a synced reference copy). Piloted live on acme-sdk 2026-08-10 on the
+  group k8s runner: a `feat:` MR with no tests failed the gate, adding a
+  test file made it pass. Per-consumer requirements: the project must be on
+  ci-tools' job-token allowlist (`projects/75/job_token_scope/allowlist`),
+  and repos with a custom `stages:` list override the job's `stage:`
+  (`.pre` is deliberately not used — GitLab never creates a pipeline that
+  holds only `.pre` jobs, and in most repos the gate is the only MR job).
+  Remaining: implement `inject-gate --apply` for the fleet rollout, the
+  Gate-Skip Feishu audit alert, and the per-project
+  `only_allow_merge_if_pipeline_succeeds` flip — announced to the team
+  first.
 - **Mac offline pauses lanes 1 and 3, not enforcement.** Protect-sweep and
   AI review both run on the operator Mac; when it's off the office network,
   both lanes simply skip their tick and catch up from cursors next time.

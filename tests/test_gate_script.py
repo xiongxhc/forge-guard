@@ -22,3 +22,14 @@ def test_gate_skip_trailer_skips():
 
 def test_three_source_files_is_feature_even_without_feat_prefix():
     assert check_mr.classify(["a.py", "b.py", "c.py"], ["update stuff"]) == "fail-needs-tests"
+
+def test_base_accepts_raw_sha(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "init", "-q"], check=True)
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "a"], check=True)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "b"], check=True)
+    assert check_mr._base(sha) == sha

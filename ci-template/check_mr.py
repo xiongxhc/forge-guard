@@ -23,12 +23,22 @@ def classify(changed_paths: list[str], commit_messages: list[str]) -> str:
         return "pass"
     return "pass" if any(_is_test(p) for p in changed_paths) else "fail-needs-tests"
 
+def _base(ref: str | None) -> str:
+    if ref is None:
+        return subprocess.run(["git", "rev-parse", "HEAD~1"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+    # A SHA (CI_MERGE_REQUEST_DIFF_BASE_SHA — always an ancestor of the
+    # checked-out MR head, so no fetch of the target branch is needed) is
+    # used directly; a branch name goes through merge-base.
+    probe = subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref + "^{commit}"],
+                           capture_output=True, text=True)
+    if probe.returncode == 0:
+        return probe.stdout.strip()
+    return subprocess.run(["git", "merge-base", "origin/" + ref, "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
 def main() -> int:
-    base = subprocess.run(
-        ["git", "merge-base", "origin/" + sys.argv[1], "HEAD"],
-        capture_output=True, text=True, check=True).stdout.strip() if len(sys.argv) > 1 \
-        else subprocess.run(["git", "rev-parse", "HEAD~1"],
-                            capture_output=True, text=True, check=True).stdout.strip()
+    base = _base(sys.argv[1] if len(sys.argv) > 1 else None)
     paths = subprocess.run(["git", "diff", "--name-only", base, "HEAD"],
                            capture_output=True, text=True, check=True).stdout.split()
     msgs = subprocess.run(["git", "log", "--format=%B%x00", f"{base}..HEAD"],
