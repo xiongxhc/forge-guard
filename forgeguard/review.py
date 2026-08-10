@@ -12,13 +12,35 @@ TRIAL_NOTE = ("⚙️ trial: auto-review currently runs on CX's workstation — 
 PROMPT = """You are reviewing a GitLab merge request for an internal team.
 Respond with ONLY a JSON object, no prose, matching:
 {{"verdict":"clean"|"issues","summary":"...","issues":[{{"severity":"high|medium|low","file":"...","note":"..."}}],"tests_opinion":"..."}}
-Rules: verdict "issues" if any high/medium issue OR feature changes lack test changes.
-Be terse. Max 6 issues, most severe first.
+Rules:
+- Flag ONLY defects where you can state a concrete failure: wrong behavior,
+  crash, data loss, security hole, or a specific maintenance trap. Each issue's
+  note MUST name that concrete consequence.
+- NO style, taste, naming, or formatting comments. NO speculation. If you are
+  not sure something is a real problem, OMIT it — a missed nitpick costs
+  nothing; a false alarm costs trust.
+- verdict "issues" only if a high/medium issue survives the rules above, OR
+  feature changes clearly lack test changes.
+- Be terse. Max 4 issues, most severe first.
 
 MR title: {title}
 Target branch: {target}
 Description:
 {description}
+
+Diff:
+{diff}
+"""
+
+SKEPTIC_PROMPT = """You previously reviewed a merge request and reported these issues:
+{issues}
+
+Re-examine each against the diff below as a skeptical senior engineer. KEEP an
+issue only if you can defend its concrete failure scenario; DROP anything that
+is a style preference, speculative, or that you cannot fully justify from the
+diff alone. Respond with ONLY the same JSON schema containing the surviving
+issues. If none survive and tests are adequate, verdict is "clean".
+{{"verdict":"clean"|"issues","summary":"...","issues":[{{"severity":"high|medium|low","file":"...","note":"..."}}],"tests_opinion":"..."}}
 
 Diff:
 {diff}
@@ -88,6 +110,10 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config) -> dict:
                     v = run_claude(PROMPT.format(title=mr["title"], target=mr["target_branch"],
                                                  description=mr.get("description") or "",
                                                  diff=diff))
+                    if v["verdict"] != "clean" and v.get("issues"):
+                        v = run_claude(SKEPTIC_PROMPT.format(
+                            issues=json.dumps(v["issues"], ensure_ascii=False),
+                            diff=diff))
                     _upsert_note(gl, pid, iid, _render_note(v))
                     if v["verdict"] == "clean":
                         try:
