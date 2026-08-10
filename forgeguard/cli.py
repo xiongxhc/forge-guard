@@ -18,7 +18,7 @@ def run_sweep(gl: GitLab, state: State, feishu, cfg: Config) -> dict:
             out["projects"] += 1
             pid, path = project["id"], project["path_with_namespace"]
             try:
-                branches = gl.get(f"/projects/{pid}/repository/branches")
+                branches = gl.get_all(f"/projects/{pid}/repository/branches")
                 for b in branches:
                     name = b["name"]
                     if name not in cfg.branches:
