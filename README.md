@@ -48,6 +48,7 @@ launchd wrappers before the CLI runs.
 |---|---|---|---|
 | `FORGEGUARD_GITLAB_URL` | yes | — | Forge base URL (`https://gitlab.example.com`). Also the URL-rebase target — GitLab returns the dead `gitlab.internal.example` in `web_url`; every URL surfaced anywhere is rebased to this host. |
 | `FORGEGUARD_GITLAB_TOKEN` | yes | — | Admin PAT. The existing Maintainer token cannot set protection on projects it doesn't maintain; instance-wide sweep coverage needs admin. |
+| `FORGEGUARD_GITLAB_EXTRA_TOKENS` | no | — | Comma-separated extra Maintainer tokens for groups the primary token can't reach (e.g. `backend/`, `frontend/`). Sweep and review run once per token; projects are deduped by id, review MR cursors are per-token (`mr_updated_after:N`), and per-MR SHA cursors prevent duplicate reviews across overlapping token views. |
 | `FORGEGUARD_FEISHU_APP_ID` | yes | — | Feishu app ID for the tenant-access-token exchange. |
 | `FORGEGUARD_FEISHU_APP_SECRET` | yes | — | Feishu app secret. |
 | `FORGEGUARD_FEISHU_CHAT_ID` | yes | — | Chat ID of the "Gitlab Review Notification" group. |

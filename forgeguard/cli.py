@@ -9,12 +9,18 @@ from .state import State
 def _commit_url(project: dict, sha: str, base: str) -> str:
     return rebase_url(f"{project['web_url']}/-/commit/{sha}", base)
 
-def run_sweep(gl: GitLab, state: State, feishu, cfg: Config) -> dict:
+def run_sweep(gl: GitLab, state: State, feishu, cfg: Config,
+              seen: set[int] | None = None) -> dict:
+    # seen dedupes projects across per-token runs (tokens' views overlap).
     out = {"projects": 0, "protected": 0, "force_push": 0, "unmr": 0, "errors": 0}
     try:
         for project in gl.get_all("/projects", archived=False):
             if project["path_with_namespace"] in cfg.exclude:
                 continue
+            if seen is not None:
+                if project["id"] in seen:
+                    continue
+                seen.add(project["id"])
             out["projects"] += 1
             pid, path = project["id"], project["path_with_namespace"]
             try:
@@ -58,16 +64,28 @@ def main(argv=None) -> int:
         print("usage: forgeguard sweep|review|inject-gate", file=sys.stderr)
         return 2
     cfg = load_config()
-    gl, state = GitLab(cfg), State.load(cfg.state_path)
+    state = State.load(cfg.state_path)
+    clients = [GitLab(cfg)] + [GitLab(cfg, token=t) for t in cfg.extra_tokens]
     if args[0] == "sweep":
-        print(run_sweep(gl, state, Feishu(cfg), cfg))
+        feishu, seen = Feishu(cfg), set()
+        total = {"projects": 0, "protected": 0, "force_push": 0, "unmr": 0, "errors": 0}
+        for gl in clients:
+            for k, v in run_sweep(gl, state, feishu, cfg, seen=seen).items():
+                total[k] += v
+        print(total)
         return 0
     if args[0] == "review":
         from .review import run_review_tick
-        print(run_review_tick(gl, state, Feishu(cfg), cfg))
+        feishu = Feishu(cfg)
+        total = {"reviewed": 0, "skipped_large": 0, "failed": 0}
+        for i, gl in enumerate(clients):
+            key = "mr_updated_after" if i == 0 else f"mr_updated_after:{i}"
+            for k, v in run_review_tick(gl, state, feishu, cfg, cursor_key=key).items():
+                total[k] += v
+        print(total)
         return 0
     from .review import inject_gate
-    return inject_gate(gl, cfg, apply="--apply" in args)
+    return inject_gate(clients[0], cfg, apply="--apply" in args)
 
 if __name__ == "__main__":
     raise SystemExit(main())

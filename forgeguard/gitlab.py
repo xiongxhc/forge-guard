@@ -13,10 +13,10 @@ def rebase_url(url: str, base: str) -> str:
     return urlunsplit((b.scheme, b.netloc, u.path, u.query, u.fragment))
 
 class GitLab:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, token: str | None = None):
         self.cfg = cfg
         self.s = requests.Session()
-        self.s.headers["PRIVATE-TOKEN"] = cfg.token
+        self.s.headers["PRIVATE-TOKEN"] = token or cfg.token
 
     def _url(self, path: str) -> str:
         return f"{self.cfg.gitlab_url}/api/v4{path}"

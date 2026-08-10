@@ -31,3 +31,9 @@ def test_get_404_ok_returns_none_and_raises_otherwise():
     from forgeguard.gitlab import GitLabError
     with pytest.raises(GitLabError):
         _gl().get("/boom")
+
+def test_token_override():
+    from forgeguard.config import load_config
+    from tests.test_config import BASE
+    gl = GitLab(load_config(dict(BASE)), token="other")
+    assert gl.s.headers["PRIVATE-TOKEN"] == "other"

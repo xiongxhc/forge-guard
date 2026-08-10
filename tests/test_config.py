@@ -29,3 +29,10 @@ def test_missing_token_exits():
     env = {k: v for k, v in BASE.items() if k != "FORGEGUARD_GITLAB_TOKEN"}
     with pytest.raises(SystemExit):
         load_config(env)
+
+def test_extra_tokens_parsed():
+    cfg = load_config(dict(BASE, FORGEGUARD_GITLAB_EXTRA_TOKENS="tok2, tok3"))
+    assert cfg.extra_tokens == ["tok2", "tok3"]
+
+def test_extra_tokens_default_empty():
+    assert load_config(dict(BASE)).extra_tokens == []

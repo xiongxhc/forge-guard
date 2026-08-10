@@ -9,6 +9,7 @@ _DEFAULT_BRANCHES = "main,master,prod,production,develop,dev,uat"
 class Config:
     gitlab_url: str
     token: str
+    extra_tokens: list[str]
     branches: list[str]
     exclude: list[str]
     feishu_app_id: str
@@ -32,6 +33,7 @@ def load_config(env: Mapping[str, str] = os.environ) -> Config:
     return Config(
         gitlab_url=_require(env, "FORGEGUARD_GITLAB_URL").rstrip("/"),
         token=_require(env, "FORGEGUARD_GITLAB_TOKEN"),
+        extra_tokens=_csv(env.get("FORGEGUARD_GITLAB_EXTRA_TOKENS", "")),
         branches=_csv(env.get("FORGEGUARD_BRANCHES", _DEFAULT_BRANCHES)),
         exclude=_csv(env.get("FORGEGUARD_EXCLUDE", "")),
         feishu_app_id=_require(env, "FORGEGUARD_FEISHU_APP_ID"),

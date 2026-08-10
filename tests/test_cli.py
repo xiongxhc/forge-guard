@@ -72,3 +72,21 @@ def test_failing_project_tolerated_and_alerted(tmp_path):
     assert st.get_tip(8, "main") == "t1"
     assert len(fk.sent) == 1
     assert "1 project(s) failed" in fk.sent[0][0]
+
+@responses.activate
+def test_sweep_seen_set_dedupes_projects(tmp_path):
+    _project_fixtures("t9")
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    seen = {7}
+    out = run_sweep(GitLab(cfg), st, fk, cfg, seen=seen)
+    assert out["projects"] == 0
+    assert st.get_tip(7, "main") is None
+
+@responses.activate
+def test_sweep_populates_seen_set(tmp_path):
+    _project_fixtures("t9")
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    seen: set = set()
+    run_sweep(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg, seen=seen)
+    assert seen == {7}

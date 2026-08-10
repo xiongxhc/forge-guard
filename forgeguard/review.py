@@ -78,10 +78,11 @@ def _render_note(v: dict) -> str:
     lines += ["", f"_Tests: {v.get('tests_opinion', '')}_"]
     return "\n".join(lines)
 
-def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config) -> dict:
+def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
+                    cursor_key: str = "mr_updated_after") -> dict:
     out = {"reviewed": 0, "skipped_large": 0, "failed": 0}
     params = {"scope": "all", "state": "opened"}
-    cursor = state.get_cursor("mr_updated_after")
+    cursor = state.get_cursor(cursor_key)
     if cursor:
         params["updated_after"] = cursor
     mrs = [m for m in gl.get_all("/merge_requests", **params)
@@ -140,7 +141,7 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config) -> dict:
                 out["failed"] += 1
                 continue
         if max_updated and out["failed"] == 0:
-            state.set_cursor("mr_updated_after", max_updated)
+            state.set_cursor(cursor_key, max_updated)
     finally:
         state.save(cfg.state_path)
     return out
