@@ -5,7 +5,7 @@
   <key>Label</key><string>com.forgeguard.review</string>
   <key>ProgramArguments</key><array>
     <string>/bin/zsh</string><string>-lc</string>
-    <string>source ~/.config/forge-guard/forge-guard.env &amp;&amp; cd __REPO__/forge-guard &amp;&amp; .venv/bin/python -m forgeguard.cli review</string>
+    <string>set -a &amp;&amp; source ~/.config/forge-guard/forge-guard.env &amp;&amp; set +a &amp;&amp; cd __REPO__/forge-guard &amp;&amp; .venv/bin/python -m forgeguard.cli review</string>
   </array>
   <key>StartInterval</key><integer>900</integer>
   <key>StandardOutPath</key><string>__HOME__/Library/Logs/ForgeGuard/review.log</string>
