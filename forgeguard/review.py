@@ -6,6 +6,9 @@ from .state import State
 
 MARKER = "<!-- forge-guard-review -->"
 
+TRIAL_NOTE = ("⚙️ trial: auto-review currently runs on CX's workstation — "
+              "best-effort availability, advisory only / 试运行阶段，评审服务暂跑在CX工作机上，仅供参考")
+
 PROMPT = """You are reviewing a GitLab merge request for an internal team.
 Respond with ONLY a JSON object, no prose, matching:
 {{"verdict":"clean"|"issues","summary":"...","issues":[{{"severity":"high|medium|low","file":"...","note":"..."}}],"tests_opinion":"..."}}
@@ -85,9 +88,14 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config) -> dict:
                         except GitLabError:
                             pass
                     author = mr["author"]["username"]
+                    if v["verdict"] == "clean":
+                        head = f"✅ approved: {mr['title']} (by {author})"
+                    else:
+                        n = len(v.get("issues", []))
+                        head = f"📝 review left for {author}: {mr['title']} — {n} issue(s)"
                     feishu.notify(
-                        f"📝 review {v['verdict']}: {mr['title']}\n{v['summary']}\n"
-                        f"MR: {mr_url}\ncommit: {commit_url}",
+                        f"{head}\n{v['summary']}\nMR: {mr_url}\ncommit: {commit_url}\n"
+                        f"{TRIAL_NOTE}",
                         at_gitlab_user=author)
                     if author not in feishu.usermap and state.flag_once(f"usermap:{author}"):
                         feishu.notify(f"ℹ️ no Feishu mapping for GitLab user '{author}' — "

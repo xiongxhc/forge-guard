@@ -56,7 +56,9 @@ For every project the token reaches:
      its own incident.
 
 State: per-project branch-tip SHAs + last-seen event cursor in a local state
-file. Every protection change, drift correction, and violation → Feishu alert.
+file. Violations and sweep errors → Feishu alert; routine protection
+changes/drift corrections are counted in the summary but NOT alerted
+(operator preference, 2026-08-10 — keep the group review-focused).
 Idempotent: a second run makes zero changes and sends zero alerts.
 
 ### Lane 2 — mechanical quality gate (hard; runs in GitLab CI, not on the Mac)
@@ -104,9 +106,10 @@ auto-review" note instead of a truncated hallucination-prone review.
   (the dead `gitlab.internal.example`). Every URL surfaced anywhere — Feishu, MR
   comments — is rebased: take the forge's *path*, force scheme+host to
   `https://gitlab.example.com/`. Same lesson as dev-agent M7.
-- Event → message matrix: review verdict (with URLs), gate failure, Gate-Skip
-  used, protection applied/drift corrected, **force push detected**, **merge
-  without MR detected** (both @pusher with commit URL), sweep error.
+- Event → message matrix: review verdict — "✅ approved: …" or "📝 review left
+  for {author}: … — N issue(s)" (with URLs), gate failure, Gate-Skip used,
+  **force push detected**, **merge without MR detected** (both @pusher with
+  commit URL), sweep error. Routine protection changes are deliberately silent.
 
 ## Config (`~/.config/forge-guard/forge-guard.env`)
 

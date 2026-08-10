@@ -25,7 +25,6 @@ def run_sweep(gl: GitLab, state: State, feishu, cfg: Config) -> dict:
                         continue
                     if ensure_protection(gl, pid, name):
                         out["protected"] += 1
-                        feishu.notify(f"🔒 protected {path}/{name} (MR-only, no force push)")
                     new_tip, old_tip = b["commit"]["id"], state.get_tip(pid, name)
                     if old_tip and old_tip != new_tip:
                         move = classify_move(gl, pid, name, old_tip, new_tip)
