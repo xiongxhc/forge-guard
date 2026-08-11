@@ -53,7 +53,7 @@ launchd wrappers before the CLI runs.
 | `FORGEGUARD_FEISHU_APP_SECRET` | yes | — | Feishu app secret. |
 | `FORGEGUARD_FEISHU_CHAT_ID` | yes | — | Chat ID of the "Gitlab Review Notification" group. |
 | `FORGEGUARD_BRANCHES` | no | `main,master,prod,production,develop,uat` | Comma-separated protected branch names. `release/*` is deliberately excluded — the release flow pushes there directly; release→main/prod merges still cross a protected branch. |
-| `FORGEGUARD_EXCLUDE` | no | *(empty)* | Comma-separated project-path denylist (archived/sandbox projects the sweep should skip). |
+| `FORGEGUARD_EXCLUDE` | no | *(empty)* | Comma-separated project-path denylist (archived/sandbox projects the sweep should skip). Currently deployed excludes: `external-user/argocd-deployments`, `acme/claude-plugins`, `root/legacy-ci-executor` (bot lacks access — await admin PAT), plus `acme-group/team-memory-inbox` and `acme-group/team-vault` — data repos written by teammem automation and member pushes; their `main`/`master` are protected with Developers+Maintainers push (force-push blocked), set manually on 2026-08-11 after the sweep's MR-only default broke memberkit's daily bundle push. |
 | `FORGEGUARD_USERMAP` | no | `~/.config/forge-guard/forge-guard-usermap.json` | Path to the GitLab-username → Feishu-open_id JSON map used for @-mentions. |
 | `FORGEGUARD_STATE` | no | `~/.local/share/forge-guard/state.json` | Path to the sweep/review state file (branch-tip SHAs, event cursors). |
 | `FORGEGUARD_DIFF_CAP` | no | `300000` | Max diff size in bytes lane 3 will send to `claude -p`; oversized MRs get a "too large for auto-review" note instead of a truncated, hallucination-prone review. |
