@@ -1,18 +1,14 @@
 # forge-guard
 
-> **Tier 2 · deployment overlay + agent source** — enforces MR-only merges,
-> detects force pushes and merges-without-MR, and posts advisory AI reviews
-> for the org GitLab. Estate map:
-> [../docs/agent-estate-architecture.md](../docs/agent-estate-architecture.md).
+Branch-protection enforcement and advisory AI merge-request review for
+self-hosted **GitLab CE** — the free tier, where you get no required
+approvals, no push rules, and no group-level protected branches.
 
-## What it is
-
-The org's GitLab is CE (free tier): no required approvals, no push rules, no
-group-level protected branches. Nothing stopped a direct push or a local
-merge to `develop` from landing straight in production — a reckless direct
-merge to `develop` on internal-tool cost roughly thousands of dollars before forge-guard existed.
-forge-guard closes that gap with three lanes, one agent, no always-on
-service — everything is a launchd tick against the GitLab API.
+Without those, nothing stops a direct push or a local merge from landing
+straight in a production branch. forge-guard closes that gap with three
+lanes, no always-on service — everything is a scheduled tick (launchd on
+macOS; cron works the same way) against the GitLab API, plus one central CI
+template.
 
 - **Lane 1 — protect-sweep** (hourly). For every project the token reaches,
   ensures each configured branch is protected (no direct push, Developers+
@@ -23,72 +19,85 @@ service — everything is a launchd tick against the GitLab API.
   incident. Also flips on `only_allow_merge_if_pipeline_succeeds`, but only
   once a project has the quality-gate CI include (lane 2) — flipping it
   earlier would block all merges on a project with no pipeline.
-- **Lane 2 — quality gate** (mechanical, runs in GitLab CI, not on the Mac).
-  A central CI template living in `acme-group/common/ci-tools`
-  (`ci/quality-gate.gitlab-ci.yml`, following that repo's central-include
-  model), added to each project's `.gitlab-ci.yml`, hard-fails MR pipelines
-  that add feature commits with no test-file changes. Combined with
-  `only_allow_merge_if_pipeline_succeeds`, this is the only lane that
-  actually blocks a merge, and it has no dependency on the operator Mac.
-  Escape hatch: a `Gate-Skip: <reason>` commit trailer makes the gate pass
-  but fires a loud Feishu alert — auditable, never silent.
-- **Lane 3 — AI review** (advisory, 15-minute tick on the operator Mac).
-  Polls open MRs targeting protected branches, runs `claude -p` (subscription,
-  never API keys) over the diff and MR description, posts a single upserted
-  review note (edited in place on re-review, never spammed), approves clean
-  MRs (a visible signal even though CE can't require it), and posts a Feishu
-  summary with the MR URL and head-commit URL.
+- **Lane 2 — quality gate** (mechanical, runs in GitLab CI, not on the
+  operator machine). A central CI template (`ci-template/`), hosted in a
+  shared `ci-tools` project and added to each project's `.gitlab-ci.yml`,
+  hard-fails MR pipelines that add feature commits with no test-file
+  changes. Combined with `only_allow_merge_if_pipeline_succeeds`, this is
+  the only lane that actually blocks a merge, and it has no dependency on
+  the operator machine. Escape hatch: a `Gate-Skip: <reason>` commit
+  trailer makes the gate pass but fires a loud Feishu alert — auditable,
+  never silent.
+- **Lane 3 — AI review** (advisory, 15-minute tick on the operator
+  machine). Polls open MRs targeting protected branches, runs the
+  [Claude Code](https://claude.com/claude-code) CLI (`claude -p`) over the
+  diff and MR description, posts a single upserted review note (edited in
+  place on re-review, never spammed), approves clean MRs (a visible signal
+  even though CE can't require it), and posts a Feishu summary with the MR
+  URL and head-commit URL. A skeptical second pass filters likely false
+  positives before anything is posted.
+
+Notifications currently target [Feishu/Lark](https://www.larksuite.com/);
+the notifier is a single small module (`forgeguard/feishu.py`) if you want
+to adapt it to Slack or plain webhooks.
+
+## Requirements
+
+- Python 3.12+
+- A GitLab personal access token with `api` scope. An **admin** PAT gives
+  instance-wide sweep coverage; a Maintainer token covers only the projects
+  it maintains (extra Maintainer tokens can be stacked via
+  `FORGEGUARD_GITLAB_EXTRA_TOKENS`).
+- A Feishu custom app (app ID + secret) with permission to post to a group
+  chat.
+- For lane 3: the `claude` CLI, logged in.
 
 ## Environment variables
 
-Loaded from `~/.config/forge-guard/forge-guard.env`, sourced by both
-launchd wrappers before the CLI runs.
+Loaded from `~/.config/forge-guard/forge-guard.env`, sourced by the
+launchd/cron wrappers before the CLI runs.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `FORGEGUARD_GITLAB_URL` | yes | — | Forge base URL (`https://gitlab.example.com`). Also the URL-rebase target — GitLab returns the dead `gitlab.internal.example` in `web_url`; every URL surfaced anywhere is rebased to this host. |
-| `FORGEGUARD_GITLAB_TOKEN` | yes | — | Admin PAT. The existing Maintainer token cannot set protection on projects it doesn't maintain; instance-wide sweep coverage needs admin. |
-| `FORGEGUARD_GITLAB_EXTRA_TOKENS` | no | — | Comma-separated extra Maintainer tokens for groups the primary token can't reach (e.g. `backend/`, `frontend/`). Sweep and review run once per token; projects are deduped by id, review MR cursors are per-token (`mr_updated_after:N`), and per-MR SHA cursors prevent duplicate reviews across overlapping token views. |
+| `FORGEGUARD_GITLAB_URL` | yes | — | GitLab base URL. Also the URL-rebase target — if your instance's configured hostname is unreachable (GitLab returns it in `web_url`), every URL surfaced anywhere is rebased to this host. |
+| `FORGEGUARD_GITLAB_TOKEN` | yes | — | Primary PAT (admin for instance-wide coverage; see Requirements). |
+| `FORGEGUARD_GITLAB_EXTRA_TOKENS` | no | — | Comma-separated extra Maintainer tokens for groups the primary token can't reach. Sweep and review run once per token; projects are deduped by id, review MR cursors are per-token, and per-MR SHA cursors prevent duplicate reviews across overlapping token views. |
 | `FORGEGUARD_FEISHU_APP_ID` | yes | — | Feishu app ID for the tenant-access-token exchange. |
 | `FORGEGUARD_FEISHU_APP_SECRET` | yes | — | Feishu app secret. |
-| `FORGEGUARD_FEISHU_CHAT_ID` | yes | — | Chat ID of the "Gitlab Review Notification" group. |
-| `FORGEGUARD_BRANCHES` | no | `main,master,prod,production,develop,uat` | Comma-separated protected branch names. `release/*` is deliberately excluded — the release flow pushes there directly; release→main/prod merges still cross a protected branch. Deployed value also carries `dev` and `develop-105` (portal-app's release branch, added 2026-08-12 — exists only on portal-app-service and portal-app-website, verified fleet-wide; the list is global but only projects having the branch are affected). |
-| `FORGEGUARD_EXCLUDE` | no | *(empty)* | Comma-separated project-path denylist (archived/sandbox projects the sweep should skip). Currently deployed excludes: `external-user/argocd-deployments`, `acme/claude-plugins`, `root/legacy-ci-executor` (bot lacks access — await admin PAT), plus `acme-group/team-memory-inbox` and `acme-group/team-vault` — data repos written by teammem automation and member pushes; their `main`/`master` are protected with Developers+Maintainers push (force-push blocked), set manually on 2026-08-11 after the sweep's MR-only default broke memberkit's daily bundle push. |
-| `FORGEGUARD_USERMAP` | no | `~/.config/forge-guard/forge-guard-usermap.json` | Path to the GitLab-username → Feishu-open_id JSON map used for @-mentions. |
+| `FORGEGUARD_FEISHU_CHAT_ID` | yes | — | Chat ID of the notification group. |
+| `FORGEGUARD_BRANCHES` | no | `main,master,prod,production,develop,dev,uat` | Comma-separated protected branch names. The list is global; only projects actually having a branch are affected. `release/*` is deliberately excluded by default — release flows often push there directly; release→main/prod merges still cross a protected branch. |
+| `FORGEGUARD_EXCLUDE` | no | *(empty)* | Comma-separated project-path denylist (archived/sandbox projects, or data repos written by automation that must keep direct push). |
+| `FORGEGUARD_USERMAP` | no | `~/.config/forge-guard/usermap.json` | Path to the GitLab-username → Feishu-open_id JSON map used for @-mentions. |
 | `FORGEGUARD_STATE` | no | `~/.local/share/forge-guard/state.json` | Path to the sweep/review state file (branch-tip SHAs, event cursors). |
 | `FORGEGUARD_DIFF_CAP` | no | `300000` | Max diff size in bytes lane 3 will send to `claude -p`; oversized MRs get a "too large for auto-review" note instead of a truncated, hallucination-prone review. |
-| `REQUESTS_CA_BUNDLE` | no | *(system default)* | Path to the private CA bundle needed to reach the forge over TLS. |
+| `REQUESTS_CA_BUNDLE` | no | *(system default)* | Path to a private CA bundle if your GitLab sits behind one. |
 
 ## Setup runbook
 
-1. **Create the env file.** `~/.config/forge-guard/forge-guard.env` —
-   set at minimum `FORGEGUARD_GITLAB_URL`, `FORGEGUARD_GITLAB_TOKEN` (admin
-   PAT — mint one on the forge; the current Maintainer token can't protect
-   foreign projects), `FORGEGUARD_FEISHU_APP_ID`, `FORGEGUARD_FEISHU_APP_SECRET`,
-   `FORGEGUARD_FEISHU_CHAT_ID`, and `REQUESTS_CA_BUNDLE` if the forge sits
-   behind the private CA.
-2. **Create the Feishu group and get its chat_id.** Create a group named
-   "Gitlab Review Notification", add the bot to it, then capture the
-   group's `chat_id` (via the Feishu API or bot logs) into
-   `FORGEGUARD_FEISHU_CHAT_ID`.
-3. **Build the usermap from the teammem roster.** The roster
-   (`team-memory-agent/config/roster.yaml`) already maps each member's
-   `gitlab:` username(s) to their `feishu:` open_id(s). Flatten that into
-   `forge-guard-usermap.json` — a flat `{"gitlab_username": "feishu_open_id"}`
-   object — at the path `FORGEGUARD_USERMAP` points to (default
-   `~/.config/forge-guard/forge-guard-usermap.json`). Members with no
+1. **Create the env file.** `~/.config/forge-guard/forge-guard.env` — set
+   at minimum `FORGEGUARD_GITLAB_URL`, `FORGEGUARD_GITLAB_TOKEN`,
+   `FORGEGUARD_FEISHU_APP_ID`, `FORGEGUARD_FEISHU_APP_SECRET`,
+   `FORGEGUARD_FEISHU_CHAT_ID`, and `REQUESTS_CA_BUNDLE` if needed.
+2. **Create the Feishu group and get its chat_id.** Create a notification
+   group, add the bot to it, then capture the group's `chat_id` (via the
+   Feishu API or bot logs) into `FORGEGUARD_FEISHU_CHAT_ID`.
+3. **Build the usermap** — a flat `{"gitlab_username": "feishu_open_id"}`
+   JSON object at the path `FORGEGUARD_USERMAP` points to. Members with no
    entry still get alerted, just without the `@`-mention; forge-guard flags
-   the missing mapping once per unmapped user.
-4. **Install dependencies.** The launchd ticks run the checkout's virtualenv:
+   each missing mapping once.
+4. **Install dependencies.** The scheduled ticks run the checkout's
+   virtualenv:
    ```sh
-   cd forge-guard && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
    ```
-5. **Install the plists.** Copy each `.example` file from `launchd/` to
+5. **Install the plists** (macOS; on Linux, equivalent cron entries for
+   `forgeguard.cli sweep` hourly and `forgeguard.cli review` every 15
+   minutes). Copy each `.example` file from `launchd/` to
    `~/Library/LaunchAgents/`, stripping the `.example` suffix, substituting
    `__REPO__` for the absolute path to this checkout and `__HOME__` for
    your home directory:
    ```sh
-   for f in forge-guard/launchd/*.plist.example; do
+   for f in launchd/*.plist.example; do
      dest=~/Library/LaunchAgents/$(basename "${f%.example}")
      sed "s#__REPO__#$(pwd)#g; s#__HOME__#$HOME#g" "$f" > "$dest"
    done
@@ -101,47 +110,33 @@ launchd wrappers before the CLI runs.
 
 ## Rollout order
 
-The four lanes/steps go live in this order, not all at once:
+The lanes go live in this order, not all at once:
 
-1. **Protect-sweep** on the existing Maintainer token's reach, for immediate
-   protection — admin PAT requested in parallel for full instance coverage.
+1. **Protect-sweep**, for immediate protection on whatever the token
+   reaches.
 2. **Feishu group + alert wiring.**
 3. **AI review lane.**
 4. **Quality-gate CI include — last**, announced to the team first (it
-   touches every repo and changes merge behavior). Runner availability
-   verified and gate piloted live 2026-08-10 (see Limitations); the
-   fleet-wide include rollout (`inject-gate --apply`) is the remaining
-   step.
+   touches every repo and changes merge behavior). Host the
+   `ci-template/` contents in a shared `ci-tools` project, add each
+   consumer project to that project's job-token allowlist, then add the
+   include to each consumer's `.gitlab-ci.yml`.
 
 ## Limitations
 
-- **Hourly detection latency.** The protect-sweep only runs once an hour, so
-  a force push or merge-without-MR can sit undetected (though not
-  un-preventable — protection itself is enforced continuously by GitLab) for
-  up to an hour before it's classified and alerted.
+- **Hourly detection latency.** The protect-sweep only runs once an hour,
+  so a force push or merge-without-MR can sit undetected (though not
+  un-preventable — protection itself is enforced continuously by GitLab)
+  for up to an hour before it's classified and alerted.
 - **GitLab CE means approvals can't be required.** The AI review lane
   approves clean MRs as a visible signal, but CE has no required-approval
   rule to hook it to — it's advisory, never a merge gate. Only the
   mechanical quality gate (lane 2) actually blocks a merge.
-- **Quality-gate is deployed and piloted, not yet fleet-wide.** The gate
-  lives in `acme-group/common/ci-tools` (`quality-gate/` tool +
-  `ci/quality-gate.gitlab-ci.yml` consumer template; `ci-template/` here is
-  a synced reference copy). Piloted live on acme-sdk 2026-08-10 on the
-  group k8s runner: a `feat:` MR with no tests failed the gate, adding a
-  test file made it pass. Per-consumer requirements: the project must be on
-  ci-tools' job-token allowlist (`projects/75/job_token_scope/allowlist`),
-  and repos with a custom `stages:` list override the job's `stage:`
-  (`.pre` is deliberately not used — GitLab never creates a pipeline that
-  holds only `.pre` jobs, and in most repos the gate is the only MR job).
-  Remaining: implement `inject-gate --apply` for the fleet rollout, the
-  Gate-Skip Feishu audit alert, and the per-project
-  `only_allow_merge_if_pipeline_succeeds` flip — announced to the team
-  first.
-- **Mac offline pauses lanes 1 and 3, not enforcement.** Protect-sweep and
-  AI review both run on the operator Mac; when it's off the office network,
-  both lanes simply skip their tick and catch up from cursors next time.
-  Branch protection (already applied) and the CI quality gate (once
-  deployed) keep enforcing on the GitLab side regardless — nothing new gets
+- **Operator machine offline pauses lanes 1 and 3, not enforcement.**
+  Protect-sweep and AI review both run on the operator machine; when it
+  can't reach GitLab, both lanes simply skip their tick and catch up from
+  cursors next time. Branch protection already applied and the CI quality
+  gate keep enforcing on the GitLab side regardless — nothing new gets
   protected until the next successful sweep, but existing protection never
   lapses.
 - **Violations are reported, never reverted.** A force push or a merge
@@ -152,3 +147,14 @@ The four lanes/steps go live in this order, not all at once:
   to land an MR that the quality gate would otherwise block, and using it
   fires a loud Feishu alert every time — it's meant to be visible, not
   silent, and every use should be reviewable after the fact.
+
+## Development
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pytest
+```
+
+## License
+
+Apache-2.0

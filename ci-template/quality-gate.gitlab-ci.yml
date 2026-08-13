@@ -10,7 +10,7 @@
 # Minimal consumer .gitlab-ci.yml addition:
 #
 #   include:
-#     - project: acme-group/common/ci-tools
+#     - project: your-group/ci-tools
 #       ref: dev
 #       file: ci/quality-gate.gitlab-ci.yml
 #
@@ -29,13 +29,13 @@
 # registry via CI_JOB_TOKEN (the only artifact type job tokens
 # may read cross-project) — each consumer project must be on
 # ci-tools' job-token allowlist (Settings → CI/CD → Job token
-# permissions, or API projects/75/job_token_scope/allowlist).
+# permissions, or API projects/<ci-tools project id>/job_token_scope/allowlist).
 # ============================================================
 quality-gate:
   stage: test
   image: alpine:3.20
   variables:
-    QUALITY_GATE_TOOL_PROJECT: "75"  # acme-group/common/ci-tools
+    QUALITY_GATE_TOOL_PROJECT: "<ci-tools project id>"  # your-group/ci-tools
     QUALITY_GATE_TOOL_REF: "dev"
     GIT_STRATEGY: clone
     GIT_DEPTH: "0"

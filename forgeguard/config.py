@@ -40,7 +40,7 @@ def load_config(env: Mapping[str, str] = os.environ) -> Config:
         feishu_app_secret=_require(env, "FORGEGUARD_FEISHU_APP_SECRET"),
         feishu_chat_id=_require(env, "FORGEGUARD_FEISHU_CHAT_ID"),
         usermap_path=env.get("FORGEGUARD_USERMAP",
-                             f"{home}/.config/forge-guard/forge-guard-usermap.json"),
+                             f"{home}/.config/forge-guard/usermap.json"),
         state_path=env.get("FORGEGUARD_STATE",
                            f"{home}/.local/share/forge-guard/state.json"),
         diff_cap_bytes=int(env.get("FORGEGUARD_DIFF_CAP", "300000")),
