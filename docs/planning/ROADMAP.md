@@ -38,6 +38,11 @@ Optional calibration before committing: re-run the last 10 reviewed MRs with
 full-file context and diff the notes against the shipped reviews (~1M tokens,
 run off-peak).
 
+Isolation for item 3: sandbox the clone-side review process fail-closed
+(probe-then-confine, runner failure ≠ clean review, env scrub) — patterns and
+platform mechanics recorded in
+`specs/2026-08-15-deepseek-harness-fail-closed-reference.md`.
+
 ## Other open items
 
 - `inject_gate --apply` fleet rollout (include injection + allowlist adds +
