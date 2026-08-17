@@ -1,6 +1,8 @@
 # DeepSeek Harness fail-closed sandbox model — reference
 
-**Date:** 2026-08-15 · **Status:** reference (no work item yet) ·
+**Date:** 2026-08-15 · **Status:** reference; ideas 2 (skip/fail Feishu
+alerts) and 4 (subprocess env scrub) implemented 2026-08-15 for the
+diff-only lane — the sandbox items await review-depth item 3 ·
 **Source:** [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
 (MIT, developer preview, open-sourced 2026-08-13; file paths below are relative
 to that repo and pinned to the preview state — verify before citing later)

@@ -46,6 +46,17 @@ Diff:
 {diff}
 """
 
+_CRED_SEGMENTS = {"TOKEN", "SECRET", "KEY", "APIKEY", "PASSWORD", "PASSWD",
+                  "CREDENTIAL", "CREDENTIALS", "PAT"}
+
+def _scrubbed_env() -> dict[str, str]:
+    # The review subprocess is model-driven; it must not inherit forge-guard's
+    # GitLab/Feishu credentials or other secret-shaped env vars. Segment match
+    # (split on "_") so PATH survives while AWS_PAT / ANTHROPIC_API_KEY don't.
+    return {k: v for k, v in os.environ.items()
+            if not (k.startswith("FORGEGUARD_")
+                    or _CRED_SEGMENTS & set(k.upper().split("_")))}
+
 def run_claude(prompt: str) -> dict:
     # Absolute binary: launchd PATH lacks ~/.local/bin. Flags per fleet
     # schedule-lib: without --strict-mcp-config --setting-sources= a scheduled
@@ -55,7 +66,8 @@ def run_claude(prompt: str) -> dict:
               or os.path.expanduser("~/.local/bin/claude"))
     r = subprocess.run([binary, "-p", "--output-format", "text",
                         "--strict-mcp-config", "--setting-sources="],
-                       input=prompt, capture_output=True, text=True, timeout=300)
+                       input=prompt, capture_output=True, text=True, timeout=300,
+                       env=_scrubbed_env())
     if r.returncode != 0:
         raise RuntimeError(f"claude exited {r.returncode}: {r.stderr[:200]}")
     out = r.stdout
@@ -103,9 +115,11 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                 diff = "\n".join(c.get("diff", "") for c in changes.get("changes", []))
                 mr_url = rebase_url(mr["web_url"], cfg.gitlab_url)
                 commit_url = rebase_url(f"{project['web_url']}/-/commit/{sha}", cfg.gitlab_url)
-                if len(diff.encode()) > cfg.diff_cap_bytes:
+                if (size := len(diff.encode())) > cfg.diff_cap_bytes:
                     _upsert_note(gl, pid, iid, f"{MARKER}\nMR too large for auto-review "
-                                               f"({len(diff.encode())} bytes > cap).")
+                                               f"({size} bytes > cap).")
+                    feishu.notify(f"⚠️ review skipped (diff {size} bytes > "
+                                  f"{cfg.diff_cap_bytes} cap): {mr_url}")
                     out["skipped_large"] += 1
                 else:
                     v = run_claude(PROMPT.format(title=mr["title"], target=mr["target_branch"],
@@ -123,13 +137,18 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                             pass
                     author = mr["author"]["username"]
                     if v["verdict"] == "clean":
-                        head = f"✅ approved: {mr['title']} (by {author})"
+                        title = f"✅ Approved: {mr['title']}"
                     else:
                         n = len(v.get("issues", []))
-                        head = f"📝 review left for {author}: {mr['title']} — {n} issue(s)"
-                    feishu.notify(
-                        f"{head}\n{v['summary']}\nMR: {mr_url}\ncommit: {commit_url}\n"
-                        f"{TRIAL_NOTE}",
+                        title = f"📝 Review: {mr['title']} — {n} issue(s)"
+                    feishu.notify_post(
+                        title,
+                        [[{"tag": "text", "text": v["summary"]}],
+                         [{"tag": "text", "text": "MR: "},
+                          {"tag": "a", "text": f"!{iid}", "href": mr_url}],
+                         [{"tag": "text", "text": "head commit: "},
+                          {"tag": "a", "text": sha[:8], "href": commit_url}],
+                         [{"tag": "text", "text": TRIAL_NOTE}]],
                         at_gitlab_user=author)
                     if author not in feishu.usermap and state.flag_once(f"usermap:{author}"):
                         feishu.notify(f"ℹ️ no Feishu mapping for GitLab user '{author}' — "
@@ -137,8 +156,15 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                     out["reviewed"] += 1
                 state.set_cursor(f"reviewed:{pid}:{iid}", sha)
                 max_updated = max(max_updated, mr["updated_at"])
-            except (RuntimeError, KeyError, GitLabError):
+            except (RuntimeError, KeyError, GitLabError) as e:
                 out["failed"] += 1
+                # Failure ≠ clean review: surface it once per MR head; the held
+                # cursor retries the review itself every tick.
+                if state.flag_once(f"reviewfail:{pid}:{iid}:{sha}"):
+                    url = (rebase_url(mr["web_url"], cfg.gitlab_url)
+                           if mr.get("web_url") else f"{pid}!{iid}")
+                    feishu.notify(f"⚠️ review failed: {url} — {type(e).__name__}: "
+                                  f"{str(e)[:160]} — will retry next tick")
                 continue
         if max_updated and out["failed"] == 0:
             state.set_cursor(cursor_key, max_updated)

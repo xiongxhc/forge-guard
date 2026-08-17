@@ -36,17 +36,23 @@ def run_sweep(gl: GitLab, state: State, feishu, cfg: Config,
                         move = classify_move(gl, pid, name, old_tip, new_tip)
                         if move["kind"] == "force_push":
                             out["force_push"] += 1
-                            feishu.notify(
-                                f"⚠️ FORCE PUSH on {path} {name} "
-                                f"(last author {b['commit'].get('author_name', '?')}): "
-                                f"{_commit_url(project, new_tip, cfg.gitlab_url)}")
+                            feishu.notify_post(
+                                f"⚠️ Force push: {path} {name}",
+                                [[{"tag": "text", "text":
+                                   f"last author: {b['commit'].get('author_name', '?')}"}],
+                                 [{"tag": "text", "text": "head commit: "},
+                                  {"tag": "a", "text": new_tip[:8],
+                                   "href": _commit_url(project, new_tip, cfg.gitlab_url)}]])
                         else:
                             for sha in move["unmr_commits"]:
                                 out["unmr"] += 1
-                                feishu.notify(
-                                    f"⚠️ merge without MR on {path} {name} "
-                                    f"(last author {b['commit'].get('author_name', '?')}): "
-                                    f"{_commit_url(project, sha, cfg.gitlab_url)}",
+                                feishu.notify_post(
+                                    f"⚠️ Merge without MR: {path} {name}",
+                                    [[{"tag": "text", "text":
+                                       f"last author: {b['commit'].get('author_name', '?')}"}],
+                                     [{"tag": "text", "text": "commit: "},
+                                      {"tag": "a", "text": sha[:8],
+                                       "href": _commit_url(project, sha, cfg.gitlab_url)}]],
                                     at_gitlab_user=b["commit"].get("author_name"))
                     state.set_tip(pid, name, new_tip)
             except GitLabError:

@@ -35,7 +35,11 @@ template.
   place on re-review, never spammed), approves clean MRs (a visible signal
   even though CE can't require it), and posts a Feishu summary with the MR
   URL and head-commit URL. A skeptical second pass filters likely false
-  positives before anything is posted.
+  positives before anything is posted. Fail-closed visibility: an oversized
+  or failed review fires its own Feishu alert (once per MR head) so a
+  missing review is never mistaken for a clean one, and the `claude -p`
+  subprocess runs with a credential-scrubbed environment (no `FORGEGUARD_*`
+  or secret-shaped variables).
 
 Notifications currently target [Feishu/Lark](https://www.larksuite.com/);
 the notifier is a single small module (`forgeguard/feishu.py`) if you want

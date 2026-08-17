@@ -9,8 +9,10 @@ API = "https://gitlab.example.com/api/v4"
 
 class FakeFeishu:
     usermap: dict = {}
-    def __init__(self): self.sent = []
+    def __init__(self): self.sent, self.posts = [], []
     def notify(self, text, at_gitlab_user=None): self.sent.append((text, at_gitlab_user))
+    def notify_post(self, title, lines, at_gitlab_user=None):
+        self.posts.append((title, lines, at_gitlab_user))
 
 def _project_fixtures(tip):
     responses.get(f"{API}/projects", json=[
@@ -45,8 +47,13 @@ def test_force_push_alerts(tmp_path):
     fk = FakeFeishu()
     out = run_sweep(GitLab(cfg), st, fk, cfg)
     assert out["force_push"] == 1
-    assert "FORCE PUSH" in fk.sent[0][0]
-    assert "https://gitlab.example.com/" in fk.sent[0][0]
+    title, lines, _ = fk.posts[0]
+    assert title == "⚠️ Force push: g/app main"
+    flat = [s for line in lines for s in line]
+    links = [s for s in flat if s.get("tag") == "a"]
+    assert links[0]["href"].startswith("https://gitlab.example.com/")
+    assert links[0]["text"] == "t2"[:8]
+    assert any("alice" in s.get("text", "") for s in flat)
     assert st.get_tip(7, "main") == "t2"
 
 @responses.activate
