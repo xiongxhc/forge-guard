@@ -150,7 +150,7 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                           {"tag": "a", "text": sha[:8], "href": commit_url}],
                          [{"tag": "text", "text": TRIAL_NOTE}]],
                         at_gitlab_user=author)
-                    if author not in feishu.usermap and state.flag_once(f"usermap:{author}"):
+                    if not feishu.open_id(author) and state.flag_once(f"usermap:{author}"):
                         feishu.notify(f"ℹ️ no Feishu mapping for GitLab user '{author}' — "
                                       f"add to forge-guard-usermap.json to enable @mentions")
                     out["reviewed"] += 1

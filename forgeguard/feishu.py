@@ -5,6 +5,9 @@ from .config import Config
 
 _BASE = "https://open.feishu.cn/open-apis"
 
+def _norm(name: str) -> str:
+    return "".join(ch for ch in name.casefold() if ch not in " ._-")
+
 class Feishu:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -14,6 +17,14 @@ class Feishu:
                 self.usermap: dict = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             self.usermap = {}
+        self._normalized = {_norm(k): v for k, v in self.usermap.items()}
+
+    def open_id(self, name: str | None) -> str | None:
+        # Exact GitLab username first; then normalized, so a git author name
+        # like "lin tianhua" or "Zihan Guo" still finds "lintianhua"/"Zihan.Guo".
+        if not name:
+            return None
+        return self.usermap.get(name) or self._normalized.get(_norm(name))
 
     def _tenant_token(self) -> str:
         if self._token is None:
@@ -38,7 +49,7 @@ class Feishu:
             raise RuntimeError(f"feishu send error: {r}")
 
     def notify(self, text: str, at_gitlab_user: str | None = None) -> None:
-        open_id = self.usermap.get(at_gitlab_user or "")
+        open_id = self.open_id(at_gitlab_user)
         if open_id:
             text = f'<at user_id="{open_id}"></at> {text}'
         self._send("text", {"text": text})
@@ -47,7 +58,7 @@ class Feishu:
                     at_gitlab_user: str | None = None) -> None:
         # lines: Feishu post content — a list of lines, each a list of
         # {"tag": "text"|"a", ...} segments.
-        open_id = self.usermap.get(at_gitlab_user or "")
+        open_id = self.open_id(at_gitlab_user)
         if open_id:
             lines = [[{"tag": "at", "user_id": open_id}]] + lines
         elif at_gitlab_user:

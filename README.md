@@ -86,9 +86,11 @@ launchd/cron wrappers before the CLI runs.
    group, add the bot to it, then capture the group's `chat_id` (via the
    Feishu API or bot logs) into `FORGEGUARD_FEISHU_CHAT_ID`.
 3. **Build the usermap** — a flat `{"gitlab_username": "feishu_open_id"}`
-   JSON object at the path `FORGEGUARD_USERMAP` points to. Members with no
-   entry still get alerted, just without the `@`-mention; forge-guard flags
-   each missing mapping once.
+   JSON object at the path `FORGEGUARD_USERMAP` points to. Lookups fall
+   back to a normalized match (case, spaces, dots, hyphens ignored), so a
+   git author name like `lin tianhua` still resolves the `lintianhua`
+   entry. Members with no entry still get alerted, just without the
+   `@`-mention; forge-guard flags each missing mapping once.
 4. **Install dependencies.** The scheduled ticks run the checkout's
    virtualenv:
    ```sh

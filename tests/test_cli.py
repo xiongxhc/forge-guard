@@ -9,6 +9,7 @@ API = "https://gitlab.example.com/api/v4"
 
 class FakeFeishu:
     usermap: dict = {}
+    def open_id(self, name): return self.usermap.get(name or "")
     def __init__(self): self.sent, self.posts = [], []
     def notify(self, text, at_gitlab_user=None): self.sent.append((text, at_gitlab_user))
     def notify_post(self, title, lines, at_gitlab_user=None):
