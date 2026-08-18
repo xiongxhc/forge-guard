@@ -18,6 +18,8 @@ class Config:
     usermap_path: str
     state_path: str
     diff_cap_bytes: int
+    diff_cap_full: int
+    full_review_label: str
 
 def _require(env: Mapping[str, str], key: str) -> str:
     val = env.get(key, "").strip()
@@ -44,4 +46,6 @@ def load_config(env: Mapping[str, str] = os.environ) -> Config:
         state_path=env.get("FORGEGUARD_STATE",
                            f"{home}/.local/share/forge-guard/state.json"),
         diff_cap_bytes=int(env.get("FORGEGUARD_DIFF_CAP", "300000")),
+        diff_cap_full=int(env.get("FORGEGUARD_DIFF_CAP_FULL", "1000000")),
+        full_review_label=env.get("FORGEGUARD_FULL_REVIEW_LABEL", "forge-guard:full-review"),
     )

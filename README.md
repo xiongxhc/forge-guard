@@ -35,9 +35,11 @@ template.
   place on re-review, never spammed), approves clean MRs (a visible signal
   even though CE can't require it), and posts a Feishu summary with the MR
   URL and head-commit URL. A skeptical second pass filters likely false
-  positives before anything is posted. Fail-closed visibility: an oversized
-  or failed review fires its own Feishu alert (once per MR head) so a
-  missing review is never mistaken for a clean one, and the `claude -p`
+  positives before anything is posted. Fail-closed visibility: a failed
+  review fires a Feishu alert once per MR head, and an oversized MR fires
+  one alert per MR (subsequent pushes only refresh the MR note) telling
+  the author how to opt into a full review by label — so a missing review
+  is never mistaken for a clean one — and the `claude -p`
   subprocess runs with a credential-scrubbed environment (no `FORGEGUARD_*`
   or secret-shaped variables).
 
@@ -74,6 +76,8 @@ launchd/cron wrappers before the CLI runs.
 | `FORGEGUARD_USERMAP` | no | `~/.config/forge-guard/usermap.json` | Path to the GitLab-username → Feishu-open_id JSON map used for @-mentions. |
 | `FORGEGUARD_STATE` | no | `~/.local/share/forge-guard/state.json` | Path to the sweep/review state file (branch-tip SHAs, event cursors). |
 | `FORGEGUARD_DIFF_CAP` | no | `300000` | Max diff size in bytes lane 3 will send to `claude -p`; oversized MRs get a "too large for auto-review" note instead of a truncated, hallucination-prone review. |
+| `FORGEGUARD_DIFF_CAP_FULL` | no | `1000000` | Hard cap for MRs carrying the full-review label (below). |
+| `FORGEGUARD_FULL_REVIEW_LABEL` | no | `forge-guard:full-review` | GitLab label an author adds to an oversized MR to request a review anyway, up to `FORGEGUARD_DIFF_CAP_FULL`. |
 | `REQUESTS_CA_BUNDLE` | no | *(system default)* | Path to a private CA bundle if your GitLab sits behind one. |
 
 ## Setup runbook

@@ -115,11 +115,31 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                 diff = "\n".join(c.get("diff", "") for c in changes.get("changes", []))
                 mr_url = rebase_url(mr["web_url"], cfg.gitlab_url)
                 commit_url = rebase_url(f"{project['web_url']}/-/commit/{sha}", cfg.gitlab_url)
-                if (size := len(diff.encode())) > cfg.diff_cap_bytes:
-                    _upsert_note(gl, pid, iid, f"{MARKER}\nMR too large for auto-review "
-                                               f"({size} bytes > cap).")
-                    feishu.notify(f"⚠️ review skipped (diff {size} bytes > "
-                                  f"{cfg.diff_cap_bytes} cap): {mr_url}")
+                full = cfg.full_review_label in (mr.get("labels") or [])
+                cap = cfg.diff_cap_full if full else cfg.diff_cap_bytes
+                if (size := len(diff.encode())) > cap:
+                    if full:
+                        _upsert_note(gl, pid, iid, f"{MARKER}\nMR too large for auto-review "
+                                     f"even with `{cfg.full_review_label}` ({size} bytes > "
+                                     f"{cap} hard cap).")
+                    else:
+                        _upsert_note(gl, pid, iid, f"{MARKER}\nMR too large for auto-review "
+                                     f"({size} bytes > {cap} cap). Add the label "
+                                     f"`{cfg.full_review_label}` to request a full review "
+                                     f"anyway (up to {cfg.diff_cap_full} bytes).")
+                        # Alert once per MR, not per push: the note carries the
+                        # instructions; a labelled MR takes the review path.
+                        if state.flag_once(f"skiplarge:{pid}:{iid}"):
+                            feishu.notify_post(
+                                f"⚠️ Review skipped: {mr['title']} — diff {size // 1000} KB "
+                                f"> {cap // 1000} KB cap",
+                                [[{"tag": "text", "text": "MR: "},
+                                  {"tag": "a", "text": f"!{iid}", "href": mr_url}],
+                                 [{"tag": "text", "text":
+                                   f"To get a full review anyway, add the label "
+                                   f"`{cfg.full_review_label}` on the MR "
+                                   f"(reviews up to {cfg.diff_cap_full // 1000} KB)."}]],
+                                at_gitlab_user=mr["author"]["username"])
                     out["skipped_large"] += 1
                 else:
                     v = run_claude(PROMPT.format(title=mr["title"], target=mr["target_branch"],

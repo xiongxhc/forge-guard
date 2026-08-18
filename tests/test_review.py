@@ -1,4 +1,5 @@
 import json, responses
+from urllib.parse import parse_qs
 from unittest.mock import patch
 from forgeguard.config import load_config
 from forgeguard.gitlab import GitLab
@@ -146,12 +147,11 @@ def test_failed_review_alerts_feishu_once_per_head(tmp_path):
     assert "https://gitlab.example.com/g/app/-/merge_requests/5" in alerts[0]
     assert "claude died" in alerts[0]
 
-@responses.activate
-def test_oversized_diff_alerts_feishu(tmp_path):
+def _big_mr(labels=None, sha="h2"):
     responses.get(f"{API}/merge_requests", json=[{
-        "iid": 6, "project_id": 7, "sha": "h2", "title": "big", "description": "",
+        "iid": 6, "project_id": 7, "sha": sha, "title": "big", "description": "",
         "target_branch": "main", "author": {"username": "bob"},
-        "updated_at": "2026-08-07T11:00:00Z",
+        "labels": labels or [], "updated_at": "2026-08-07T11:00:00Z",
         "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/6"}],
         headers={"X-Next-Page": ""})
     responses.get(f"{API}/projects/7", json={
@@ -162,10 +162,51 @@ def test_oversized_diff_alerts_feishu(tmp_path):
     responses.get(f"{API}/projects/7/merge_requests/6/notes", json=[],
                   headers={"X-Next-Page": ""})
     responses.post(f"{API}/projects/7/merge_requests/6/notes", json={"id": 2})
+
+@responses.activate
+def test_oversized_diff_alerts_once_per_mr_with_label_hint(tmp_path):
+    _big_mr()
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0}
+    title, lines, at_user = fk.posts[0]
+    assert title.startswith("⚠️ Review skipped: big")
+    assert at_user == "bob"
+    flat = [s for line in lines for s in line]
+    assert "https://gitlab.example.com/g/app/-/merge_requests/6" in [s.get("href") for s in flat]
+    assert any("forge-guard:full-review" in s.get("text", "") for s in flat)
+    body = parse_qs(responses.calls[-1].request.body)["body"][0]
+    assert "forge-guard:full-review" in body
+    # a new push to the same still-oversized MR: note refreshed, no second alert
+    responses.reset(); _big_mr(sha="h3")
+    out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0}
+    assert len(fk.posts) == 1
+    assert st.get_cursor("reviewed:7:6") == "h3"
+
+@responses.activate
+def test_full_review_label_raises_cap(tmp_path):
+    _big_mr(labels=["forge-guard:full-review"])
+    responses.post(f"{API}/projects/7/merge_requests/6/approve", json={})
     cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
     fk = FakeFeishu()
-    out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), fk, cfg)
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude", return_value=verdict) as rc:
+        out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), fk, cfg)
+    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0}
+    assert "x" * 400_000 in rc.call_args.args[0]
+    assert fk.posts[0][0] == "✅ Approved: big"
+
+@responses.activate
+def test_full_review_label_still_over_hard_cap(tmp_path):
+    _big_mr(labels=["forge-guard:full-review"])
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json"),
+                           FORGEGUARD_DIFF_CAP_FULL="350000"))
+    fk = FakeFeishu()
+    with patch("forgeguard.review.run_claude") as rc:
+        out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), fk, cfg)
     assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0}
-    alerts = [t for t, _ in fk.sent if "review skipped" in t]
-    assert len(alerts) == 1
-    assert "https://gitlab.example.com/g/app/-/merge_requests/6" in alerts[0]
+    rc.assert_not_called()
+    body = parse_qs(responses.calls[-1].request.body)["body"][0]
+    assert "even with" in body and "350000" in body
