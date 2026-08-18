@@ -145,8 +145,13 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                               {"tag": "a", "text": f"!{iid}", "href": mr_url}],
                              [{"tag": "text", "text":
                                f"GitLab returned diff content for only {coverage} changed "
-                               f"files, so no auto-review was run. Splitting the MR is the "
-                               f"only way to get one."}]],
+                               f"files, so no auto-review was run."}],
+                             [{"tag": "text", "text":
+                               "How to get it reviewed: GitLab's API can't serve this diff "
+                               "in full, so the full-review label won't help — split the MR "
+                               "into smaller MRs (e.g. code separate from generated docs/"
+                               ".planning), each well under the current file count. Every "
+                               "smaller MR is reviewed on its next push."}]],
                             at_gitlab_user=mr["author"]["username"])
                     out["skipped_large"] += 1
                 elif (size := len(diff.encode())) > cap:
@@ -168,9 +173,11 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                                 [[{"tag": "text", "text": "MR: "},
                                   {"tag": "a", "text": f"!{iid}", "href": mr_url}],
                                  [{"tag": "text", "text":
-                                   f"To get a full review anyway, add the label "
-                                   f"`{cfg.full_review_label}` on the MR "
-                                   f"(reviews up to {cfg.diff_cap_full // 1000} KB)."}]],
+                                   f"How to get it reviewed: open the MR → Labels (right "
+                                   f"sidebar) → add `{cfg.full_review_label}`. forge-guard "
+                                   f"reviews it on the next tick (≤15 min) and on every later "
+                                   f"push, up to {cfg.diff_cap_full // 1000} KB. Above that, "
+                                   f"split the MR."}]],
                                 at_gitlab_user=mr["author"]["username"])
                     out["skipped_large"] += 1
                 else:

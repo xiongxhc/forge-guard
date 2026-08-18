@@ -175,7 +175,7 @@ def test_oversized_diff_alerts_once_per_mr_with_label_hint(tmp_path):
     assert at_user == "bob"
     flat = [s for line in lines for s in line]
     assert "https://gitlab.example.com/g/app/-/merge_requests/6" in [s.get("href") for s in flat]
-    assert any("forge-guard:full-review" in s.get("text", "") for s in flat)
+    assert any("How to get it reviewed" in s.get("text", "") and "forge-guard:full-review" in s.get("text", "") for s in flat)
     body = parse_qs(responses.calls[-1].request.body)["body"][0]
     assert "forge-guard:full-review" in body
     # a new push to the same still-oversized MR: note refreshed, no second alert
@@ -243,6 +243,7 @@ def test_truncated_diff_not_reviewed_and_alerted_once(tmp_path):
     assert title.startswith("⚠️ Review skipped: big feature") and "truncated" in title
     flat = [s for line in lines for s in line]
     assert any("1 of 3" in s.get("text", "") for s in flat)
+    assert any("How to get it reviewed" in s.get("text", "") and "split the MR" in s.get("text", "") for s in flat)
     assert st.get_cursor("reviewed:7:8") == "h8"
     responses.reset(); _truncated_mr()
     with patch("forgeguard.review.run_claude"):
