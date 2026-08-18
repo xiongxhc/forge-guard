@@ -40,9 +40,10 @@ template.
   one alert per MR (subsequent pushes only refresh the MR note) telling
   the author how to opt into a full review by label, and when GitLab
   truncates a large MR's diff (blank per-file diffs, `changes_count`
-  "N+") the review is labelled PARTIAL with the uncovered files and never
-  auto-approves — so a missing or partial review is never mistaken for a
-  clean one — and the `claude -p`
+  "N+") no review is run at all — a review of a fragment reads like a
+  verdict on the MR — only an alert and, if one exists, the stale review
+  note rewritten to "not reviewed" — so a missing review is never
+  mistaken for a clean one — and the `claude -p`
   subprocess runs with a credential-scrubbed environment (no `FORGEGUARD_*`
   or secret-shaped variables).
 
