@@ -38,8 +38,11 @@ template.
   positives before anything is posted. Fail-closed visibility: a failed
   review fires a Feishu alert once per MR head, and an oversized MR fires
   one alert per MR (subsequent pushes only refresh the MR note) telling
-  the author how to opt into a full review by label — so a missing review
-  is never mistaken for a clean one — and the `claude -p`
+  the author how to opt into a full review by label, and when GitLab
+  truncates a large MR's diff (blank per-file diffs, `changes_count`
+  "N+") the review is labelled PARTIAL with the uncovered files and never
+  auto-approves — so a missing or partial review is never mistaken for a
+  clean one — and the `claude -p`
   subprocess runs with a credential-scrubbed environment (no `FORGEGUARD_*`
   or secret-shaped variables).
 

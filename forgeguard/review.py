@@ -84,7 +84,10 @@ def _upsert_note(gl: GitLab, pid: int, iid: int, body: str) -> None:
     gl.post(f"/projects/{pid}/merge_requests/{iid}/notes", body=body)
 
 def _render_note(v: dict) -> str:
-    lines = [MARKER, f"**forge-guard review — {v['verdict']}**", "", v["summary"], ""]
+    lines = [MARKER, f"**forge-guard review — {v['verdict']}**", ""]
+    if v.get("partial"):
+        lines += [f"⚠️ {v['partial']}", ""]
+    lines += [v["summary"], ""]
     for i in v.get("issues", []):
         lines.append(f"- **{i['severity']}** `{i['file']}` — {i['note']}")
     lines += ["", f"_Tests: {v.get('tests_opinion', '')}_"]
@@ -112,7 +115,15 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                     max_updated = max(max_updated, mr["updated_at"])
                     continue
                 changes = gl.get(f"/projects/{pid}/merge_requests/{iid}/changes")
-                diff = "\n".join(c.get("diff", "") for c in changes.get("changes", []))
+                files = changes.get("changes", [])
+                diff = "\n".join(c.get("diff", "") for c in files)
+                # GitLab blanks per-file diffs (and reports changes_count "N+")
+                # once an MR exceeds its diff limits; a review of that payload
+                # must be labelled partial, never presented as complete.
+                blank = [c["new_path"] for c in files
+                         if not c.get("diff") and not (c.get("renamed_file") or c.get("deleted_file"))]
+                partial = bool(blank) or str(changes.get("changes_count", "")).endswith("+")
+                coverage = f"{sum(1 for c in files if c.get('diff'))} of {len(files)}"
                 mr_url = rebase_url(mr["web_url"], cfg.gitlab_url)
                 commit_url = rebase_url(f"{project['web_url']}/-/commit/{sha}", cfg.gitlab_url)
                 full = cfg.full_review_label in (mr.get("labels") or [])
@@ -142,6 +153,11 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                                 at_gitlab_user=mr["author"]["username"])
                     out["skipped_large"] += 1
                 else:
+                    if partial:
+                        diff = (f"NOTE — PARTIAL DIFF: GitLab returned content for only "
+                                f"{coverage} changed files. Files with NO content shown "
+                                f"(do not assume they are unchanged): "
+                                f"{', '.join(blank[:40])}{' …' if len(blank) > 40 else ''}\n\n{diff}")
                     v = run_claude(PROMPT.format(title=mr["title"], target=mr["target_branch"],
                                                  description=mr.get("description") or "",
                                                  diff=diff))
@@ -149,18 +165,24 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                         v = run_claude(SKEPTIC_PROMPT.format(
                             issues=json.dumps(v["issues"], ensure_ascii=False),
                             diff=diff))
+                    if partial:
+                        v["partial"] = (f"PARTIAL — GitLab returned diff content for only "
+                                        f"{coverage} changed files; not reviewed: "
+                                        f"{', '.join(blank[:40])}{' …' if len(blank) > 40 else ''}")
                     _upsert_note(gl, pid, iid, _render_note(v))
-                    if v["verdict"] == "clean":
+                    if v["verdict"] == "clean" and not partial:
                         try:
                             gl.post(f"/projects/{pid}/merge_requests/{iid}/approve")
                         except GitLabError:
                             pass
                     author = mr["author"]["username"]
-                    if v["verdict"] == "clean":
+                    if v["verdict"] == "clean" and not partial:
                         title = f"✅ Approved: {mr['title']}"
                     else:
                         n = len(v.get("issues", []))
                         title = f"📝 Review: {mr['title']} — {n} issue(s)"
+                    if partial:
+                        title += f" (PARTIAL: {coverage} files)"
                     feishu.notify_post(
                         title,
                         [[{"tag": "text", "text": v["summary"]}],

@@ -210,3 +210,38 @@ def test_full_review_label_still_over_hard_cap(tmp_path):
     rc.assert_not_called()
     body = parse_qs(responses.calls[-1].request.body)["body"][0]
     assert "even with" in body and "350000" in body
+
+@responses.activate
+def test_truncated_diff_reviewed_as_partial(tmp_path):
+    responses.get(f"{API}/merge_requests", json=[{
+        "iid": 8, "project_id": 7, "sha": "h8", "title": "big feature", "description": "",
+        "target_branch": "main", "author": {"username": "bob"}, "labels": [],
+        "updated_at": "2026-08-07T11:00:00Z",
+        "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/8"}],
+        headers={"X-Next-Page": ""})
+    responses.get(f"{API}/projects/7", json={
+        "path_with_namespace": "g/app",
+        "web_url": "https://gitlab.internal.example/g/app"})
+    responses.get(f"{API}/projects/7/merge_requests/8/changes", json={
+        "changes_count": "3+",
+        "changes": [{"new_path": "docs/a.md", "diff": "+ docs"},
+                    {"new_path": "src/Main.java", "diff": ""},
+                    {"new_path": "old.txt", "diff": "", "renamed_file": True},
+                    {"new_path": "gone.txt", "diff": "", "deleted_file": True}]})
+    responses.get(f"{API}/projects/7/merge_requests/8/notes", json=[],
+                  headers={"X-Next-Page": ""})
+    responses.post(f"{API}/projects/7/merge_requests/8/notes", json={"id": 9})
+    responses.post(f"{API}/projects/7/merge_requests/8/approve", json={})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    fk = FakeFeishu()
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude", return_value=verdict) as rc:
+        out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), fk, cfg)
+    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0}
+    prompt = rc.call_args.args[0]
+    assert "PARTIAL" in prompt and "src/Main.java" in prompt
+    body = parse_qs(responses.calls[-1].request.body)["body"][0]
+    assert "PARTIAL" in body and "1 of 4" in body and "src/Main.java" in body
+    assert "PARTIAL" in fk.posts[0][0]
+    # a clean-but-partial verdict must not auto-approve
+    assert not any(c.request.url.endswith("/approve") for c in responses.calls)
