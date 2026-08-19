@@ -98,13 +98,13 @@ def _render_note(v: dict) -> str:
 
 def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                     cursor_key: str = "mr_updated_after") -> dict:
-    out = {"reviewed": 0, "skipped_large": 0, "failed": 0}
+    out = {"reviewed": 0, "skipped_large": 0, "failed": 0, "merged_unreviewed": 0}
     params = {"scope": "all", "state": "opened"}
     cursor = state.get_cursor(cursor_key)
     if cursor:
         params["updated_after"] = cursor
     mrs = [m for m in gl.get_all("/merge_requests", **params)
-           if cfg.branch_match(m["target_branch"])]
+           if cfg.review_match(m["target_branch"])]
     max_updated = cursor or ""
     projects: dict[int, dict] = {}
     try:
@@ -227,9 +227,49 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                 continue
         if max_updated and out["failed"] == 0:
             state.set_cursor(cursor_key, max_updated)
+        _check_merged_without_review(gl, state, feishu, cfg, cursor_key, out)
     finally:
         state.save(cfg.state_path)
     return out
+
+def _check_merged_without_review(gl: GitLab, state: State, feishu, cfg: Config,
+                                 cursor_key: str, out: dict) -> None:
+    # Protection guarantees an MR, not a review of it: an author can merge
+    # inside the tick window and the opened-state review never happens.
+    # Surface those merges; the first tick only sets a baseline.
+    merged_key = f"{cursor_key}:merged"
+    baseline = state.get_cursor(merged_key) or state.get_cursor(cursor_key)
+    if not baseline:
+        return
+    max_updated = baseline
+    projects: dict[int, dict] = {}
+    for mr in gl.get_all("/merge_requests", scope="all", state="merged",
+                         updated_after=baseline):
+        pid, iid, sha = mr["project_id"], mr["iid"], mr["sha"]
+        max_updated = max(max_updated, mr["updated_at"])
+        if not cfg.review_match(mr["target_branch"]):
+            continue
+        try:
+            project = projects.setdefault(pid, gl.get(f"/projects/{pid}"))
+        except GitLabError:
+            continue
+        if project["path_with_namespace"] in cfg.exclude:
+            continue
+        if state.get_cursor(f"reviewed:{pid}:{iid}") == sha:
+            continue
+        out["merged_unreviewed"] += 1
+        if state.flag_once(f"noreview:{pid}:{iid}:{sha}"):
+            mr_url = rebase_url(mr["web_url"], cfg.gitlab_url)
+            feishu.notify_post(
+                f"⚠️ Merged without review: {mr['title']}",
+                [[{"tag": "text", "text": "MR: "},
+                  {"tag": "a", "text": f"!{iid}", "href": mr_url}],
+                 [{"tag": "text", "text":
+                   f"Merged into {mr['target_branch']} before forge-guard "
+                   f"reviewed head {sha[:8]} — the auto-review runs on a "
+                   f"15-minute tick; merging within that window skips it."}]],
+                at_gitlab_user=mr["author"]["username"])
+    state.set_cursor(merged_key, max_updated)
 
 def inject_gate(gl: GitLab, cfg: Config, apply: bool) -> int:
     if apply:

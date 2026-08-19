@@ -83,7 +83,7 @@ def main(argv=None) -> int:
     if args[0] == "review":
         from .review import run_review_tick
         feishu = Feishu(cfg)
-        total = {"reviewed": 0, "skipped_large": 0, "failed": 0}
+        total = {"reviewed": 0, "skipped_large": 0, "failed": 0, "merged_unreviewed": 0}
         for i, gl in enumerate(clients):
             key = "mr_updated_after" if i == 0 else f"mr_updated_after:{i}"
             for k, v in run_review_tick(gl, state, feishu, cfg, cursor_key=key).items():

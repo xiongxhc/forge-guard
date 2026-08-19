@@ -12,17 +12,26 @@ class Config:
     token: str
     extra_tokens: list[str]
     branches: list[str]
+    review_branches: list[str]
     exclude: list[str]
     feishu_app_id: str
     feishu_app_secret: str
     feishu_chat_id: str
     usermap_path: str
 
-    def branch_match(self, name: str) -> bool:
+    @staticmethod
+    def _match(name: str, patterns) -> bool:
         # Plain entries are exact; entries containing a glob char use
         # fnmatch (GitLab's own protected-branch wildcard convention).
         return any(fnmatchcase(name, b) if ("*" in b or "?" in b) else name == b
-                   for b in self.branches)
+                   for b in patterns)
+
+    def branch_match(self, name: str) -> bool:
+        return self._match(name, self.branches)
+
+    def review_match(self, name: str) -> bool:
+        # Review lane covers the protection list plus review-only branches.
+        return self._match(name, self.branches + self.review_branches)
     state_path: str
     diff_cap_bytes: int
     diff_cap_full: int
@@ -44,6 +53,7 @@ def load_config(env: Mapping[str, str] = os.environ) -> Config:
         token=_require(env, "FORGEGUARD_GITLAB_TOKEN"),
         extra_tokens=_csv(env.get("FORGEGUARD_GITLAB_EXTRA_TOKENS", "")),
         branches=_csv(env.get("FORGEGUARD_BRANCHES", _DEFAULT_BRANCHES)),
+        review_branches=_csv(env.get("FORGEGUARD_REVIEW_BRANCHES", "")),
         exclude=_csv(env.get("FORGEGUARD_EXCLUDE", "")),
         feishu_app_id=_require(env, "FORGEGUARD_FEISHU_APP_ID"),
         feishu_app_secret=_require(env, "FORGEGUARD_FEISHU_APP_SECRET"),

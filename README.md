@@ -43,7 +43,10 @@ template.
   "N+") no review is run at all — a review of a fragment reads like a
   verdict on the MR — only an alert and, if one exists, the stale review
   note rewritten to "not reviewed" — so a missing review is never
-  mistaken for a clean one — and the `claude -p`
+  mistaken for a clean one. MRs merged before the tick could review
+  their final head are flagged to Feishu as merged-without-review
+  (CE cannot require approvals, so fast merges skip the advisory
+  review; this makes the skip visible). And the `claude -p`
   subprocess runs with a credential-scrubbed environment (no `FORGEGUARD_*`
   or secret-shaped variables).
 
@@ -76,6 +79,7 @@ launchd/cron wrappers before the CLI runs.
 | `FORGEGUARD_FEISHU_APP_SECRET` | yes | — | Feishu app secret. |
 | `FORGEGUARD_FEISHU_CHAT_ID` | yes | — | Chat ID of the notification group. |
 | `FORGEGUARD_BRANCHES` | no | `main,master,prod,production,develop,dev,uat` | Comma-separated protected branch names. An entry containing `*`/`?` is a tail-anchored fnmatch glob (GitLab's wildcard convention), e.g. `*/uat` covers `adaa/uat`; plain entries always match exactly, so `dev` never catches `dev-tooling`. The list is global; only projects actually having a branch are affected. `release/*` is deliberately excluded by default — release flows often push there directly; release→main/prod merges still cross a protected branch. |
+| `FORGEGUARD_REVIEW_BRANCHES` | no | *(empty)* | Extra branch names/globs the **review lane only** covers (e.g. `release/*,uat-*`) — MRs targeting them get AI reviews, but the branches are not protected and moves are not classified. |
 | `FORGEGUARD_EXCLUDE` | no | *(empty)* | Comma-separated project-path denylist (archived/sandbox projects, or data repos written by automation that must keep direct push). |
 | `FORGEGUARD_USERMAP` | no | `~/.config/forge-guard/usermap.json` | Path to the GitLab-username → Feishu-open_id JSON map used for @-mentions. |
 | `FORGEGUARD_STATE` | no | `~/.local/share/forge-guard/state.json` | Path to the sweep/review state file (branch-tip SHAs, event cursors). |

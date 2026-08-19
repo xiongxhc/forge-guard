@@ -47,3 +47,12 @@ def test_branch_match_exact_and_glob():
     assert not cfg.branch_match("feature/devtools")  # glob is tail-anchored
     cfg = load_config(BASE)                          # no glob entries -> pure exact
     assert not cfg.branch_match("adaa/dev")
+
+def test_review_branches_review_only():
+    cfg = load_config(dict(BASE, FORGEGUARD_REVIEW_BRANCHES="release/*,uat-*"))
+    assert cfg.review_match("release/2.1.0")
+    assert cfg.review_match("uat-2.1.0")
+    assert cfg.review_match("dev")                 # main list included
+    assert not cfg.branch_match("release/2.1.0")   # protection untouched
+    cfg = load_config(BASE)
+    assert not cfg.review_match("release/2.1.0")   # default empty

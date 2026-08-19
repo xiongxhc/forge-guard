@@ -39,7 +39,7 @@ def test_review_tick_posts_note_approves_and_notifies(tmp_path):
     verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "has tests"}
     with patch("forgeguard.review.run_claude", return_value=verdict):
         out = run_review_tick(GitLab(cfg), st, fk, cfg)
-    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0}
+    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0, "merged_unreviewed": 0}
     title, lines, at_user = fk.posts[0]
     assert title == "✅ Approved: feat: x"
     assert at_user == "alice"
@@ -69,7 +69,7 @@ def test_oversized_diff_skipped(tmp_path):
     responses.post(f"{API}/projects/7/merge_requests/6/notes", json={"id": 2})
     cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
     out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
-    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0}
+    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0, "merged_unreviewed": 0}
 
 @responses.activate
 def test_failing_mr_skipped_cursor_held(tmp_path):
@@ -100,7 +100,7 @@ def test_failing_mr_skipped_cursor_held(tmp_path):
     with patch("forgeguard.review.run_claude",
                side_effect=[RuntimeError("claude died"), verdict]):
         out = run_review_tick(GitLab(cfg), st, FakeFeishu(), cfg)
-    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 1}
+    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 1, "merged_unreviewed": 0}
     assert st.get_cursor("reviewed:7:6") == "h2"
     assert st.get_cursor("reviewed:7:5") is None
     assert st.get_cursor("mr_updated_after") is None
@@ -171,19 +171,19 @@ def test_oversized_diff_alerts_once_per_mr_with_label_hint(tmp_path):
     cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
     st, fk = State.load(cfg.state_path), FakeFeishu()
     out = run_review_tick(GitLab(cfg), st, fk, cfg)
-    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0}
+    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0, "merged_unreviewed": 0}
     title, lines, at_user = fk.posts[0]
     assert title.startswith("⚠️ Review skipped: big")
     assert at_user == "bob"
     flat = [s for line in lines for s in line]
     assert "https://gitlab.example.com/g/app/-/merge_requests/6" in [s.get("href") for s in flat]
     assert any("How to get it reviewed" in s.get("text", "") and "forge-guard:full-review" in s.get("text", "") for s in flat)
-    body = parse_qs(responses.calls[-1].request.body)["body"][0]
+    body = parse_qs([c for c in responses.calls if "/notes" in c.request.url and c.request.body][-1].request.body)["body"][0]
     assert "forge-guard:full-review" in body
     # a new push to the same still-oversized MR: note refreshed, no second alert
     responses.reset(); _big_mr(sha="h3")
     out = run_review_tick(GitLab(cfg), st, fk, cfg)
-    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0}
+    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0, "merged_unreviewed": 0}
     assert len(fk.posts) == 1
     assert st.get_cursor("reviewed:7:6") == "h3"
 
@@ -196,7 +196,7 @@ def test_full_review_label_raises_cap(tmp_path):
     verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
     with patch("forgeguard.review.run_claude", return_value=verdict) as rc:
         out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), fk, cfg)
-    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0}
+    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0, "merged_unreviewed": 0}
     assert "x" * 400_000 in rc.call_args.args[0]
     assert fk.posts[0][0] == "✅ Approved: big"
 
@@ -208,9 +208,9 @@ def test_full_review_label_still_over_hard_cap(tmp_path):
     fk = FakeFeishu()
     with patch("forgeguard.review.run_claude") as rc:
         out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), fk, cfg)
-    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0}
+    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0, "merged_unreviewed": 0}
     rc.assert_not_called()
-    body = parse_qs(responses.calls[-1].request.body)["body"][0]
+    body = parse_qs([c for c in responses.calls if "/notes" in c.request.url and c.request.body][-1].request.body)["body"][0]
     assert "even with" in body and "350000" in body
 
 def _truncated_mr(existing_note=None):
@@ -238,7 +238,7 @@ def test_truncated_diff_not_reviewed_and_alerted_once(tmp_path):
     st, fk = State.load(cfg.state_path), FakeFeishu()
     with patch("forgeguard.review.run_claude") as rc:
         out = run_review_tick(GitLab(cfg), st, fk, cfg)
-    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0}
+    assert out == {"reviewed": 0, "skipped_large": 1, "failed": 0, "merged_unreviewed": 0}
     rc.assert_not_called()
     assert not any("/notes" in c.request.url and c.request.method == "POST" for c in responses.calls)
     title, lines, at_user = fk.posts[0]
@@ -289,7 +289,7 @@ def test_blank_file_diffs_without_overflow_reviewed_normally(tmp_path):
     verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
     with patch("forgeguard.review.run_claude", return_value=verdict):
         out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), fk, cfg)
-    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0}
+    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0, "merged_unreviewed": 0}
     assert fk.posts[0][0] == "✅ Approved: pdf feature"
 
 @responses.activate
@@ -314,4 +314,80 @@ def test_review_covers_glob_matched_target_branch(tmp_path):
     verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
     with patch("forgeguard.review.run_claude", return_value=verdict):
         out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
-    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0}
+    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0, "merged_unreviewed": 0}
+
+@responses.activate
+def test_review_branch_list_reviews_release_mr(tmp_path):
+    responses.get(f"{API}/merge_requests", json=[{
+        "iid": 21, "project_id": 7, "sha": "h21", "title": "to release", "description": "",
+        "target_branch": "release/2.1.0", "author": {"username": "ws"}, "labels": [],
+        "updated_at": "2026-08-07T11:00:00Z",
+        "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/21"}],
+        headers={"X-Next-Page": ""})
+    responses.get(f"{API}/projects/7", json={
+        "path_with_namespace": "g/app",
+        "web_url": "https://gitlab.internal.example/g/app"})
+    responses.get(f"{API}/projects/7/merge_requests/21/changes",
+                  json={"changes_count": 1, "changes": [{"new_path": "a", "diff": "+ x"}]})
+    responses.get(f"{API}/projects/7/merge_requests/21/notes", json=[],
+                  headers={"X-Next-Page": ""})
+    responses.post(f"{API}/projects/7/merge_requests/21/notes", json={"id": 1})
+    responses.post(f"{API}/projects/7/merge_requests/21/approve", json={})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json"),
+                           FORGEGUARD_REVIEW_BRANCHES="release/*"))
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude", return_value=verdict):
+        out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
+    assert out["reviewed"] == 1
+
+def _merged_mr_fixture(sha="m1"):
+    responses.get(f"{API}/merge_requests",
+                  json=[], headers={"X-Next-Page": ""},
+                  match=[responses.matchers.query_param_matcher({"state": "opened"}, strict_match=False)])
+    responses.get(f"{API}/merge_requests", json=[{
+        "iid": 30, "project_id": 7, "sha": sha, "title": "fast merge", "description": "",
+        "target_branch": "dev", "author": {"username": "spd"}, "labels": [],
+        "updated_at": "2026-08-07T12:00:00Z",
+        "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/30"}],
+        headers={"X-Next-Page": ""},
+        match=[responses.matchers.query_param_matcher({"state": "merged"}, strict_match=False)])
+    responses.get(f"{API}/projects/7", json={
+        "path_with_namespace": "g/app",
+        "web_url": "https://gitlab.internal.example/g/app"})
+
+@responses.activate
+def test_merged_without_review_alerts_once(tmp_path):
+    _merged_mr_fixture()
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    st.set_cursor("mr_updated_after", "2026-08-07T00:00:00Z")
+    out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert out["merged_unreviewed"] == 1
+    title, lines, at_user = fk.posts[0]
+    assert title.startswith("⚠️ Merged without review: fast merge")
+    assert at_user == "spd"
+    flat = [s for line in lines for s in line]
+    assert "https://gitlab.example.com/g/app/-/merge_requests/30" in [s.get("href") for s in flat]
+    responses.reset(); _merged_mr_fixture()
+    out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert len(fk.posts) == 1                      # deduped
+
+@responses.activate
+def test_merged_with_review_not_alerted(tmp_path):
+    _merged_mr_fixture()
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    st.set_cursor("mr_updated_after", "2026-08-07T00:00:00Z")
+    st.set_cursor("reviewed:7:30", "m1")           # we reviewed this head
+    out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert out["merged_unreviewed"] == 0
+    assert fk.posts == []
+
+@responses.activate
+def test_merged_check_baselines_without_cursor(tmp_path):
+    responses.get(f"{API}/merge_requests", json=[], headers={"X-Next-Page": ""})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    out = run_review_tick(GitLab(cfg), st, fk, cfg)   # no cursors at all yet
+    assert out["merged_unreviewed"] == 0
+    assert fk.posts == [] and fk.sent == []
