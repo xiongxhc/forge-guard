@@ -291,3 +291,27 @@ def test_blank_file_diffs_without_overflow_reviewed_normally(tmp_path):
         out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), fk, cfg)
     assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0}
     assert fk.posts[0][0] == "✅ Approved: pdf feature"
+
+@responses.activate
+def test_review_covers_glob_matched_target_branch(tmp_path):
+    responses.get(f"{API}/merge_requests", json=[{
+        "iid": 12, "project_id": 7, "sha": "h12", "title": "dev to uat", "description": "",
+        "target_branch": "adaa/uat", "author": {"username": "ws"}, "labels": [],
+        "updated_at": "2026-08-07T11:00:00Z",
+        "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/12"}],
+        headers={"X-Next-Page": ""})
+    responses.get(f"{API}/projects/7", json={
+        "path_with_namespace": "g/app",
+        "web_url": "https://gitlab.internal.example/g/app"})
+    responses.get(f"{API}/projects/7/merge_requests/12/changes",
+                  json={"changes_count": 1, "changes": [{"new_path": "a", "diff": "+ x"}]})
+    responses.get(f"{API}/projects/7/merge_requests/12/notes", json=[],
+                  headers={"X-Next-Page": ""})
+    responses.post(f"{API}/projects/7/merge_requests/12/notes", json={"id": 13})
+    responses.post(f"{API}/projects/7/merge_requests/12/approve", json={})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json"),
+                           FORGEGUARD_BRANCHES="dev,uat,*/uat"))
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude", return_value=verdict):
+        out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
+    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0}

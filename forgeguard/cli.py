@@ -27,7 +27,7 @@ def run_sweep(gl: GitLab, state: State, feishu, cfg: Config,
                 branches = gl.get_all(f"/projects/{pid}/repository/branches")
                 for b in branches:
                     name = b["name"]
-                    if name not in cfg.branches:
+                    if not cfg.branch_match(name):
                         continue
                     if ensure_protection(gl, pid, name):
                         out["protected"] += 1

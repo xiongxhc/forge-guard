@@ -36,3 +36,14 @@ def test_extra_tokens_parsed():
 
 def test_extra_tokens_default_empty():
     assert load_config(dict(BASE)).extra_tokens == []
+
+def test_branch_match_exact_and_glob():
+    cfg = load_config(dict(BASE, FORGEGUARD_BRANCHES="dev,uat,*/dev,*/uat"))
+    assert cfg.branch_match("dev")
+    assert cfg.branch_match("adaa/dev")
+    assert cfg.branch_match("uaeaa/uat")
+    assert not cfg.branch_match("dev-tooling")       # plain entries stay exact
+    assert not cfg.branch_match("redevelop")
+    assert not cfg.branch_match("feature/devtools")  # glob is tail-anchored
+    cfg = load_config(BASE)                          # no glob entries -> pure exact
+    assert not cfg.branch_match("adaa/dev")

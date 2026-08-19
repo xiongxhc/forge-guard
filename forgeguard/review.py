@@ -104,7 +104,7 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
     if cursor:
         params["updated_after"] = cursor
     mrs = [m for m in gl.get_all("/merge_requests", **params)
-           if m["target_branch"] in cfg.branches]
+           if cfg.branch_match(m["target_branch"])]
     max_updated = cursor or ""
     projects: dict[int, dict] = {}
     try:

@@ -98,3 +98,24 @@ def test_sweep_populates_seen_set(tmp_path):
     seen: set = set()
     run_sweep(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg, seen=seen)
     assert seen == {7}
+
+
+@responses.activate
+def test_sweep_protects_glob_matched_branch(tmp_path):
+    responses.get(f"{API}/projects", json=[
+        {"id": 7, "path_with_namespace": "g/app",
+         "web_url": "https://gitlab.internal.example/g/app"}],
+        headers={"X-Next-Page": ""})
+    responses.get(f"{API}/projects/7/repository/branches", json=[
+        {"name": "adaa/uat", "commit": {"id": "t1", "author_name": "alice"}},
+        {"name": "feature/devtools", "commit": {"id": "t2", "author_name": "alice"}}],
+        headers={"X-Next-Page": ""})
+    responses.get(f"{API}/projects/7/protected_branches/adaa%2Fuat", json={}, status=404)
+    responses.post(f"{API}/projects/7/protected_branches", json={})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json"),
+                           FORGEGUARD_BRANCHES="uat,*/uat"))
+    st = State.load(cfg.state_path)
+    out = run_sweep(GitLab(cfg), st, FakeFeishu(), cfg)
+    assert out["protected"] == 1                       # adaa/uat protected
+    assert st.get_tip(7, "adaa/uat") == "t1"
+    assert st.get_tip(7, "feature/devtools") is None   # feature branch untouched

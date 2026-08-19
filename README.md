@@ -75,7 +75,7 @@ launchd/cron wrappers before the CLI runs.
 | `FORGEGUARD_FEISHU_APP_ID` | yes | — | Feishu app ID for the tenant-access-token exchange. |
 | `FORGEGUARD_FEISHU_APP_SECRET` | yes | — | Feishu app secret. |
 | `FORGEGUARD_FEISHU_CHAT_ID` | yes | — | Chat ID of the notification group. |
-| `FORGEGUARD_BRANCHES` | no | `main,master,prod,production,develop,dev,uat` | Comma-separated protected branch names. The list is global; only projects actually having a branch are affected. `release/*` is deliberately excluded by default — release flows often push there directly; release→main/prod merges still cross a protected branch. |
+| `FORGEGUARD_BRANCHES` | no | `main,master,prod,production,develop,dev,uat` | Comma-separated protected branch names. An entry containing `*`/`?` is a tail-anchored fnmatch glob (GitLab's wildcard convention), e.g. `*/uat` covers `adaa/uat`; plain entries always match exactly, so `dev` never catches `dev-tooling`. The list is global; only projects actually having a branch are affected. `release/*` is deliberately excluded by default — release flows often push there directly; release→main/prod merges still cross a protected branch. |
 | `FORGEGUARD_EXCLUDE` | no | *(empty)* | Comma-separated project-path denylist (archived/sandbox projects, or data repos written by automation that must keep direct push). |
 | `FORGEGUARD_USERMAP` | no | `~/.config/forge-guard/usermap.json` | Path to the GitLab-username → Feishu-open_id JSON map used for @-mentions. |
 | `FORGEGUARD_STATE` | no | `~/.local/share/forge-guard/state.json` | Path to the sweep/review state file (branch-tip SHAs, event cursors). |

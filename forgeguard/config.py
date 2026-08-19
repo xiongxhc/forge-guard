@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+from fnmatch import fnmatchcase
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -16,6 +17,12 @@ class Config:
     feishu_app_secret: str
     feishu_chat_id: str
     usermap_path: str
+
+    def branch_match(self, name: str) -> bool:
+        # Plain entries are exact; entries containing a glob char use
+        # fnmatch (GitLab's own protected-branch wildcard convention).
+        return any(fnmatchcase(name, b) if ("*" in b or "?" in b) else name == b
+                   for b in self.branches)
     state_path: str
     diff_cap_bytes: int
     diff_cap_full: int
