@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, shutil, subprocess
+import json, os, shutil, subprocess, tempfile
 from .config import Config
 from .gitlab import GitLab, GitLabError, rebase_url
 from .state import State
@@ -67,7 +67,7 @@ def run_claude(prompt: str) -> dict:
     r = subprocess.run([binary, "-p", "--output-format", "text",
                         "--strict-mcp-config", "--setting-sources="],
                        input=prompt, capture_output=True, text=True, timeout=300,
-                       env=_scrubbed_env())
+                       env=_scrubbed_env(), cwd=tempfile.gettempdir())
     if r.returncode != 0:
         raise RuntimeError(f"claude exited {r.returncode}: {r.stderr[:200]}")
     out = r.stdout
@@ -120,12 +120,12 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                 changes = gl.get(f"/projects/{pid}/merge_requests/{iid}/changes")
                 files = changes.get("changes", [])
                 diff = "\n".join(c.get("diff", "") for c in files)
-                # GitLab blanks per-file diffs (and reports changes_count "N+")
-                # once an MR exceeds its diff limits; that payload is a fragment,
-                # not the MR, so it is never reviewed.
-                blank = [c["new_path"] for c in files
-                         if not c.get("diff") and not (c.get("renamed_file") or c.get("deleted_file"))]
-                partial = bool(blank) or str(changes.get("changes_count", "")).endswith("+")
+                # Truncation is only what GitLab itself marks (changes_count
+                # "N+" / overflow); that payload is a fragment, not the MR, so
+                # it is never reviewed. A blank per-file diff alone is normal —
+                # binary, collapsed-generated, or moved files.
+                partial = (str(changes.get("changes_count", "")).endswith("+")
+                           or bool(changes.get("overflow")))
                 coverage = f"{sum(1 for c in files if c.get('diff'))} of {len(files)}"
                 mr_url = rebase_url(mr["web_url"], cfg.gitlab_url)
                 commit_url = rebase_url(f"{project['web_url']}/-/commit/{sha}", cfg.gitlab_url)

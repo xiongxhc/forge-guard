@@ -117,6 +117,8 @@ def test_run_claude_scrubs_credentials_from_child_env():
          patch("forgeguard.review.subprocess.run", return_value=fake) as run:
         run_claude("x")
     child_env = run.call_args.kwargs["env"]
+    import tempfile
+    assert run.call_args.kwargs["cwd"] == tempfile.gettempdir()
     assert child_env["HOME"] == "/home/x"
     assert child_env["PATH"] == "/usr/bin"
     for k in ("FORGEGUARD_GITLAB_TOKEN", "FORGEGUARD_FEISHU_APP_SECRET",
@@ -261,3 +263,31 @@ def test_truncated_diff_replaces_stale_review_note(tmp_path):
     assert len(puts) == 1
     body = parse_qs(puts[0].request.body)["body"][0]
     assert "not reviewed" in body and "truncated" in body and "1 of 3" in body
+
+@responses.activate
+def test_blank_file_diffs_without_overflow_reviewed_normally(tmp_path):
+    responses.get(f"{API}/merge_requests", json=[{
+        "iid": 9, "project_id": 7, "sha": "h9", "title": "pdf feature", "description": "",
+        "target_branch": "main", "author": {"username": "dd"}, "labels": [],
+        "updated_at": "2026-08-07T11:00:00Z",
+        "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/9"}],
+        headers={"X-Next-Page": ""})
+    responses.get(f"{API}/projects/7", json={
+        "path_with_namespace": "g/app",
+        "web_url": "https://gitlab.internal.example/g/app"})
+    responses.get(f"{API}/projects/7/merge_requests/9/changes", json={
+        "changes_count": 3, "overflow": False,
+        "changes": [{"new_path": "src/a.ts", "diff": "+ code"},
+                    {"new_path": "fixture.pdf", "diff": ""},
+                    {"new_path": "package-lock.json", "diff": "", "collapsed": True}]})
+    responses.get(f"{API}/projects/7/merge_requests/9/notes", json=[],
+                  headers={"X-Next-Page": ""})
+    responses.post(f"{API}/projects/7/merge_requests/9/notes", json={"id": 11})
+    responses.post(f"{API}/projects/7/merge_requests/9/approve", json={})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    fk = FakeFeishu()
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude", return_value=verdict):
+        out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), fk, cfg)
+    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0}
+    assert fk.posts[0][0] == "✅ Approved: pdf feature"
