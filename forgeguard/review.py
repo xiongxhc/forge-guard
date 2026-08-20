@@ -175,7 +175,7 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                                  [{"tag": "text", "text":
                                    f"How to get it reviewed: open the MR → Labels (right "
                                    f"sidebar) → add `{cfg.full_review_label}`. forge-guard "
-                                   f"reviews it on the next tick (≤15 min) and on every later "
+                                   f"reviews it on the next tick and on every later "
                                    f"push, up to {cfg.diff_cap_full // 1000} KB. Above that, "
                                    f"split the MR."}]],
                                 at_gitlab_user=mr["author"]["username"])
@@ -267,7 +267,7 @@ def _check_merged_without_review(gl: GitLab, state: State, feishu, cfg: Config,
                  [{"tag": "text", "text":
                    f"Merged into {mr['target_branch']} before forge-guard "
                    f"reviewed head {sha[:8]} — the auto-review runs on a "
-                   f"15-minute tick; merging within that window skips it."}]],
+                   f"periodic tick; merging within that window skips it."}]],
                 at_gitlab_user=mr["author"]["username"])
     state.set_cursor(merged_key, max_updated)
 

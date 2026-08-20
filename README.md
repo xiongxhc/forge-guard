@@ -28,7 +28,8 @@ template.
   the operator machine. Escape hatch: a `Gate-Skip: <reason>` commit
   trailer makes the gate pass but fires a loud Feishu alert — auditable,
   never silent.
-- **Lane 3 — AI review** (advisory, 15-minute tick on the operator
+- **Lane 3 — AI review** (advisory, periodic tick — 5 minutes as
+  deployed — on the operator
   machine). Polls open MRs targeting protected branches, runs the
   [Claude Code](https://claude.com/claude-code) CLI (`claude -p`) over the
   diff and MR description, posts a single upserted review note (edited in
