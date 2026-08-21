@@ -13,6 +13,7 @@ def run_sweep(gl: GitLab, state: State, feishu, cfg: Config,
               seen: set[int] | None = None) -> dict:
     # seen dedupes projects across per-token runs (tokens' views overlap).
     out = {"projects": 0, "protected": 0, "force_push": 0, "unmr": 0, "errors": 0}
+    failed_paths: list[str] = []
     try:
         for project in gl.get_all("/projects", archived=False):
             if project["path_with_namespace"] in cfg.exclude:
@@ -57,9 +58,12 @@ def run_sweep(gl: GitLab, state: State, feishu, cfg: Config,
                     state.set_tip(pid, name, new_tip)
             except GitLabError:
                 out["errors"] += 1
+                failed_paths.append(path)
                 continue
         if out["errors"] > 0:
-            feishu.notify(f"⚠️ sweep: {out['errors']} project(s) failed (GitLab errors) — coverage incomplete")
+            shown = ", ".join(failed_paths[:10]) + (" …" if len(failed_paths) > 10 else "")
+            feishu.notify(f"⚠️ sweep: {out['errors']} project(s) failed (GitLab errors) — "
+                          f"coverage incomplete: {shown}")
     finally:
         state.save(cfg.state_path)
     return out

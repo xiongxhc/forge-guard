@@ -80,6 +80,7 @@ def test_failing_project_tolerated_and_alerted(tmp_path):
     assert st.get_tip(8, "main") == "t1"
     assert len(fk.sent) == 1
     assert "1 project(s) failed" in fk.sent[0][0]
+    assert "g/bad" in fk.sent[0][0]
 
 @responses.activate
 def test_sweep_seen_set_dedupes_projects(tmp_path):
