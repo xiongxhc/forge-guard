@@ -38,9 +38,11 @@ def test_classify_force_push():
 def test_classify_unmr_commit():
     responses.get(f"{API}/projects/7/repository/merge_base", json={"id": "old"})
     responses.get(f"{API}/projects/7/repository/compare",
-                  json={"commits": [{"id": "c1"}, {"id": "c2"}]})
+                  json={"commits": [{"id": "c1", "title": "ok", "author_name": "alice"},
+                                    {"id": "c2", "title": "sneaky", "author_name": "bob"}]})
     responses.get(f"{API}/projects/7/repository/commits/c1/merge_requests",
                   json=[{"state": "merged", "target_branch": "main"}])
     responses.get(f"{API}/projects/7/repository/commits/c2/merge_requests", json=[])
     out = classify_move(_gl(), 7, "main", "old", "new")
-    assert out == {"kind": "ok", "unmr_commits": ["c2"]}
+    assert out == {"kind": "ok", "unmr_commits": [
+        {"id": "c2", "title": "sneaky", "author_name": "bob"}]}

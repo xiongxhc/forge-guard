@@ -120,3 +120,46 @@ def test_sweep_protects_glob_matched_branch(tmp_path):
     assert out["protected"] == 1                       # adaa/uat protected
     assert st.get_tip(7, "adaa/uat") == "t1"
     assert st.get_tip(7, "feature/devtools") is None   # feature branch untouched
+
+
+def _move_fixtures(tmp_path, commits):
+    _project_fixtures("t9")
+    responses.get(f"{API}/projects/7/repository/merge_base", json={"id": "t1"})
+    responses.get(f"{API}/projects/7/repository/compare", json={"commits": commits})
+    for c in commits:
+        responses.get(f"{API}/projects/7/repository/commits/{c['id']}/merge_requests", json=[])
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st = State.load(cfg.state_path)
+    st.set_tip(7, "main", "t1")
+    return cfg, st
+
+@responses.activate
+def test_merge_without_mr_small_batch_mentions_commit_author(tmp_path):
+    cfg, st = _move_fixtures(tmp_path, [
+        {"id": "c1", "title": "fix a", "author_name": "bob"},
+        {"id": "c2", "title": "fix b", "author_name": "carol"}])
+    fk = FakeFeishu()
+    out = run_sweep(GitLab(cfg), st, fk, cfg)
+    assert out["unmr"] == 2
+    assert len(fk.posts) == 2
+    assert fk.posts[0][2] == "bob"      # each commit @s its own author,
+    assert fk.posts[1][2] == "carol"    # not the branch's last author
+
+@responses.activate
+def test_merge_without_mr_batches_over_three(tmp_path):
+    commits = [{"id": f"c{i}", "title": f"fix {i}", "author_name": ("bob" if i < 3 else "carol")}
+               for i in range(5)]
+    cfg, st = _move_fixtures(tmp_path, commits)
+    fk = FakeFeishu()
+    fk.usermap = {"bob": "ou_bob"}
+    out = run_sweep(GitLab(cfg), st, fk, cfg)
+    assert out["unmr"] == 5
+    assert len(fk.posts) == 1
+    title, lines, at_user = fk.posts[0]
+    assert title == "⚠️ Merge without MR: g/app main — 5 commits"
+    assert at_user is None
+    flat = [s for line in lines for s in line]
+    assert sum(1 for s in flat if s.get("tag") == "a") == 5          # one linked sha per row
+    assert {"tag": "at", "user_id": "ou_bob"} in flat                 # mapped author @-mentioned
+    assert any(s.get("text", "").startswith("@carol") for s in flat)  # unmapped named
+    assert any("fix 4" in s.get("text", "") for s in flat)            # commit titles present

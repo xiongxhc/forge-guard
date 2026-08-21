@@ -32,5 +32,6 @@ def classify_move(gl: GitLab, project_id: int, branch: str, old: str, new: str) 
         mrs = gl.get(f"/projects/{project_id}/repository/commits/{c['id']}/merge_requests")
         if not any(m.get("state") == "merged" and m.get("target_branch") == branch
                    for m in mrs):
-            unmr.append(c["id"])
+            unmr.append({"id": c["id"], "title": c.get("title", ""),
+                         "author_name": c.get("author_name", "?")})
     return {"kind": "ok", "unmr_commits": unmr}

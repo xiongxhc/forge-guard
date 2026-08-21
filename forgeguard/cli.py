@@ -45,16 +45,34 @@ def run_sweep(gl: GitLab, state: State, feishu, cfg: Config,
                                   {"tag": "a", "text": new_tip[:8],
                                    "href": _commit_url(project, new_tip, cfg.gitlab_url)}]])
                         else:
-                            for sha in move["unmr_commits"]:
-                                out["unmr"] += 1
+                            commits = move["unmr_commits"]
+                            out["unmr"] += len(commits)
+                            if len(commits) > 3:
+                                rows = []
+                                for c in commits[:15]:
+                                    oid = feishu.open_id(c["author_name"])
+                                    who = ([{"tag": "at", "user_id": oid}] if oid
+                                           else [{"tag": "text", "text": f"@{c['author_name']}"}])
+                                    rows.append(who + [
+                                        {"tag": "text", "text": " "},
+                                        {"tag": "a", "text": c["id"][:8],
+                                         "href": _commit_url(project, c["id"], cfg.gitlab_url)},
+                                        {"tag": "text", "text": f" {c['title']}"}])
+                                if len(commits) > 15:
+                                    rows.append([{"tag": "text",
+                                                  "text": f"…and {len(commits) - 15} more"}])
                                 feishu.notify_post(
-                                    f"⚠️ Merge without MR: {path} {name}",
-                                    [[{"tag": "text", "text":
-                                       f"last author: {b['commit'].get('author_name', '?')}"}],
-                                     [{"tag": "text", "text": "commit: "},
-                                      {"tag": "a", "text": sha[:8],
-                                       "href": _commit_url(project, sha, cfg.gitlab_url)}]],
-                                    at_gitlab_user=b["commit"].get("author_name"))
+                                    f"⚠️ Merge without MR: {path} {name} — {len(commits)} commits",
+                                    rows)
+                            else:
+                                for c in commits:
+                                    feishu.notify_post(
+                                        f"⚠️ Merge without MR: {path} {name}",
+                                        [[{"tag": "text", "text": c["title"]}],
+                                         [{"tag": "text", "text": "commit: "},
+                                          {"tag": "a", "text": c["id"][:8],
+                                           "href": _commit_url(project, c["id"], cfg.gitlab_url)}]],
+                                        at_gitlab_user=c["author_name"])
                     state.set_tip(pid, name, new_tip)
             except GitLabError:
                 out["errors"] += 1
