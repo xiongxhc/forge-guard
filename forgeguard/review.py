@@ -243,6 +243,8 @@ def _check_merged_without_review(gl: GitLab, state: State, feishu, cfg: Config,
         return
     max_updated = baseline
     projects: dict[int, dict] = {}
+    fresh: list[dict] = []
+    fresh_keys: list[str] = []
     for mr in gl.get_all("/merge_requests", scope="all", state="merged",
                          updated_after=baseline):
         pid, iid, sha = mr["project_id"], mr["iid"], mr["sha"]
@@ -258,17 +260,45 @@ def _check_merged_without_review(gl: GitLab, state: State, feishu, cfg: Config,
         if state.get_cursor(f"reviewed:{pid}:{iid}") == sha:
             continue
         out["merged_unreviewed"] += 1
-        if state.flag_once(f"noreview:{pid}:{iid}:{sha}"):
-            mr_url = rebase_url(mr["web_url"], cfg.gitlab_url)
+        # Peek only: flags are set after the Feishu post succeeds, so a failed
+        # post leaves the alert eligible for retry on the next tick.
+        key = f"noreview:{pid}:{iid}:{sha}"
+        if not state.flagged(key) and key not in fresh_keys:
+            fresh.append(mr)
+            fresh_keys.append(key)
+    if len(fresh) > 3:
+        rows = []
+        for mr in fresh[:15]:
+            username = mr["author"]["username"]
+            oid = feishu.open_id(username)
+            who = ([{"tag": "at", "user_id": oid}] if oid
+                   else [{"tag": "text", "text": f"@{username}"}])
+            path = projects[mr["project_id"]]["path_with_namespace"]
+            rows.append(who + [
+                {"tag": "text", "text": " "},
+                {"tag": "a", "text": f"{path}!{mr['iid']}",
+                 "href": rebase_url(mr["web_url"], cfg.gitlab_url)},
+                {"tag": "text", "text": f" {mr['title']}"}])
+        if len(fresh) > 15:
+            rows.append([{"tag": "text",
+                          "text": f"…and {len(fresh) - 15} more"}])
+        feishu.notify_post(
+            f"⚠️ Merged without review: {len(fresh)} MRs", rows)
+        for key in fresh_keys:
+            state.flag_once(key)
+    else:
+        for mr, key in zip(fresh, fresh_keys):
             feishu.notify_post(
                 f"⚠️ Merged without review: {mr['title']}",
                 [[{"tag": "text", "text": "MR: "},
-                  {"tag": "a", "text": f"!{iid}", "href": mr_url}],
+                  {"tag": "a", "text": f"!{mr['iid']}",
+                   "href": rebase_url(mr["web_url"], cfg.gitlab_url)}],
                  [{"tag": "text", "text":
                    f"Merged into {mr['target_branch']} before forge-guard "
-                   f"reviewed head {sha[:8]} — the auto-review runs on a "
-                   f"periodic tick; merging within that window skips it."}]],
+                   f"reviewed head {mr['sha'][:8]} — the auto-review runs on "
+                   f"a periodic tick; merging within that window skips it."}]],
                 at_gitlab_user=mr["author"]["username"])
+            state.flag_once(key)
     state.set_cursor(merged_key, max_updated)
 
 def inject_gate(gl: GitLab, cfg: Config, apply: bool) -> int:

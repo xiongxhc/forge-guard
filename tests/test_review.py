@@ -391,3 +391,90 @@ def test_merged_check_baselines_without_cursor(tmp_path):
     out = run_review_tick(GitLab(cfg), st, fk, cfg)   # no cursors at all yet
     assert out["merged_unreviewed"] == 0
     assert fk.posts == [] and fk.sent == []
+
+def _merged_mrs_fixture(n):
+    responses.get(f"{API}/merge_requests",
+                  json=[], headers={"X-Next-Page": ""},
+                  match=[responses.matchers.query_param_matcher({"state": "opened"}, strict_match=False)])
+    responses.get(f"{API}/merge_requests", json=[{
+        "iid": 30 + i, "project_id": 7, "sha": f"m{i}", "title": f"fast merge {i}",
+        "description": "", "target_branch": "dev",
+        "author": {"username": f"spd{i}"}, "labels": [],
+        "updated_at": "2026-08-07T12:00:00Z",
+        "web_url": f"https://gitlab.internal.example/g/app/-/merge_requests/{30 + i}"}
+        for i in range(n)],
+        headers={"X-Next-Page": ""},
+        match=[responses.matchers.query_param_matcher({"state": "merged"}, strict_match=False)])
+    responses.get(f"{API}/projects/7", json={
+        "path_with_namespace": "g/app",
+        "web_url": "https://gitlab.internal.example/g/app"})
+
+@responses.activate
+def test_merged_without_review_batches_over_three(tmp_path):
+    _merged_mrs_fixture(4)
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    fk.usermap = {"spd0": "ou_1"}
+    st.set_cursor("mr_updated_after", "2026-08-07T00:00:00Z")
+    out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert out["merged_unreviewed"] == 4
+    assert len(fk.posts) == 1                      # one combined message
+    title, lines, at_user = fk.posts[0]
+    assert title == "⚠️ Merged without review: 4 MRs"
+    assert len(lines) == 4
+    flat = [s for line in lines for s in line]
+    links = [s for s in flat if s.get("tag") == "a"]
+    hrefs = [s["href"] for s in links]
+    for iid in (30, 31, 32, 33):
+        assert f"https://gitlab.example.com/g/app/-/merge_requests/{iid}" in hrefs
+    assert links[0]["text"] == "g/app!30"          # project disambiguates rows
+    assert any(s.get("text", "").endswith("fast merge 2") for s in flat)
+    assert {"tag": "at", "user_id": "ou_1"} in flat      # mapped author @-tagged
+    assert any(s.get("text") == "@spd1" for s in flat)   # unmapped falls back
+    responses.reset(); _merged_mrs_fixture(4)
+    run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert len(fk.posts) == 1                      # deduped on second tick
+
+@responses.activate
+def test_merged_without_review_batch_caps_at_fifteen_rows(tmp_path):
+    _merged_mrs_fixture(17)
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    st.set_cursor("mr_updated_after", "2026-08-07T00:00:00Z")
+    out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert out["merged_unreviewed"] == 17
+    assert len(fk.posts) == 1
+    title, lines, _ = fk.posts[0]
+    assert title == "⚠️ Merged without review: 17 MRs"
+    assert len(lines) == 16                        # 15 rows + overflow line
+    assert lines[-1] == [{"tag": "text", "text": "…and 2 more"}]
+
+@responses.activate
+def test_merged_without_review_three_or_fewer_stays_individual(tmp_path):
+    _merged_mrs_fixture(3)
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    st.set_cursor("mr_updated_after", "2026-08-07T00:00:00Z")
+    out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert out["merged_unreviewed"] == 3
+    assert len(fk.posts) == 3
+    assert all(t.startswith("⚠️ Merged without review: fast merge") for t, _, _ in fk.posts)
+
+@responses.activate
+def test_failed_alert_post_leaves_batch_unflagged_for_retry(tmp_path):
+    import pytest
+    class FailingFeishu(FakeFeishu):
+        def notify_post(self, *a, **k): raise RuntimeError("feishu down")
+    _merged_mrs_fixture(4)
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st = State.load(cfg.state_path)
+    st.set_cursor("mr_updated_after", "2026-08-07T00:00:00Z")
+    with pytest.raises(RuntimeError):
+        run_review_tick(GitLab(cfg), st, FailingFeishu(), cfg)
+    st2 = State.load(cfg.state_path)              # finally-saved state from failed tick
+    responses.reset(); _merged_mrs_fixture(4)
+    fk = FakeFeishu()
+    out = run_review_tick(GitLab(cfg), st2, fk, cfg)
+    assert out["merged_unreviewed"] == 4
+    assert len(fk.posts) == 1                     # batch retried, nothing lost
+    assert fk.posts[0][0] == "⚠️ Merged without review: 4 MRs"

@@ -38,3 +38,6 @@ class State:
             return False
         self.d["flags"].append(key)
         return True
+
+    def flagged(self, key: str) -> bool:
+        return key in self.d["flags"]
