@@ -2,6 +2,7 @@ from __future__ import annotations
 import json, os, shutil, subprocess, tempfile
 from urllib.parse import quote
 import requests
+from .brief import load_brief
 from .config import Config
 from .gitlab import GitLab, GitLabError, rebase_url
 from .state import State
@@ -67,8 +68,12 @@ def _fetch_raw(gl: GitLab, pid: int, path: str, ref: str) -> str | None:
     except (GitLabError, requests.RequestException):
         return None
 
-def _build_context(gl: GitLab, pid: int, sha: str, files: list, cap: int) -> str:
+def _build_context(gl: GitLab, pid: int, sha: str, files: list, cap: int,
+                   brief: str | None = None) -> str:
     parts = []
+    if brief:
+        parts.append("Project brief (auto-generated from this codebase; the "
+                     "code outranks it where they disagree):\n" + brief)
     for name in RULES_FILES:
         if rules := _fetch_raw(gl, pid, name, sha):
             parts.append(f"Project review rules ({name} in the repo — apply "
@@ -106,14 +111,17 @@ def _scrubbed_env() -> dict[str, str]:
             if not (k.startswith("FORGEGUARD_")
                     or _CRED_SEGMENTS & set(k.upper().split("_")))}
 
+def _claude_binary() -> str:
+    # Absolute binary: launchd PATH lacks ~/.local/bin.
+    return (os.environ.get("FORGEGUARD_CLAUDE_BIN")
+            or shutil.which("claude")
+            or os.path.expanduser("~/.local/bin/claude"))
+
 def run_claude(prompt: str) -> dict:
-    # Absolute binary: launchd PATH lacks ~/.local/bin. Flags per fleet
-    # schedule-lib: without --strict-mcp-config --setting-sources= a scheduled
-    # claude -p loads the claude-mem MCP stack and deadlocks on shared chroma.
-    binary = (os.environ.get("FORGEGUARD_CLAUDE_BIN")
-              or shutil.which("claude")
-              or os.path.expanduser("~/.local/bin/claude"))
-    r = subprocess.run([binary, "-p", "--output-format", "text",
+    # Flags per fleet schedule-lib: without --strict-mcp-config
+    # --setting-sources= a scheduled claude -p loads the claude-mem MCP
+    # stack and deadlocks on shared chroma.
+    r = subprocess.run([_claude_binary(), "-p", "--output-format", "text",
                         "--strict-mcp-config", "--setting-sources="],
                        input=prompt, capture_output=True, text=True, timeout=300,
                        env=_scrubbed_env(), cwd=tempfile.gettempdir())
@@ -234,8 +242,10 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                     # leaves less room for file content, so the total prompt
                     # stays bounded instead of stacking both caps.
                     budget = max(0, cfg.context_cap_bytes - len(diff.encode()))
-                    context = (_build_context(gl, pid, sha, files, budget)
-                               if cfg.review_mode == "files" else "")
+                    context = (_build_context(
+                        gl, pid, sha, files, budget,
+                        brief=load_brief(cfg, project["path_with_namespace"]))
+                        if cfg.review_mode == "files" else "")
                     v = run_claude(PROMPT.format(title=mr["title"], target=mr["target_branch"],
                                                  description=mr.get("description") or "",
                                                  context=context, diff=diff))

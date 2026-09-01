@@ -579,3 +579,24 @@ def test_files_mode_omits_oversized_file_content(tmp_path):
     prompt = rc.call_args.args[0]
     assert "omitted for size" in prompt and "src/app.py" in prompt
     assert "y" * 1000 not in prompt
+
+@responses.activate
+def test_files_mode_injects_project_brief(tmp_path):
+    import os
+    _ctx_mr()
+    responses.get(f"{API}/projects/7/repository/files/src%2Fapp.py/raw",
+                  body="def handler(): pass")
+    brief_dir = tmp_path / "briefs"
+    os.makedirs(brief_dir)
+    (brief_dir / "g__app.md").write_text(
+        "<!-- forge-guard-brief abc -->\nDjango app; routes need auth.\n")
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json"),
+                           FORGEGUARD_BRIEF_DIR=str(brief_dir)))
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude", return_value=verdict) as rc:
+        out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
+    assert out["reviewed"] == 1
+    prompt = rc.call_args.args[0]
+    assert "Project brief (auto-generated" in prompt
+    assert "Django app; routes need auth." in prompt
+    assert "forge-guard-brief abc" not in prompt          # marker stripped

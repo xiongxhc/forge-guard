@@ -38,6 +38,7 @@ class Config:
     full_review_label: str
     review_mode: str
     context_cap_bytes: int
+    brief_dir: str
 
 def _require(env: Mapping[str, str], key: str) -> str:
     val = env.get(key, "").strip()
@@ -73,4 +74,6 @@ def load_config(env: Mapping[str, str] = os.environ) -> Config:
         full_review_label=env.get("FORGEGUARD_FULL_REVIEW_LABEL", "forge-guard:full-review"),
         review_mode=mode,
         context_cap_bytes=int(env.get("FORGEGUARD_CONTEXT_CAP", "600000")),
+        brief_dir=env.get("FORGEGUARD_BRIEF_DIR",
+                          f"{home}/.local/share/forge-guard/briefs"),
     )

@@ -38,6 +38,13 @@ class GitLab:
             raise GitLabError(r.status_code, path)
         return r.text
 
+    def get_bytes(self, path: str, **params) -> bytes:
+        # For binary endpoints (e.g. /repository/archive.tar.gz).
+        r = self.s.get(self._url(path), params=params, timeout=120)
+        if r.status_code >= 400:
+            raise GitLabError(r.status_code, path)
+        return r.content
+
     def get_all(self, path: str, **params) -> list:
         out, page = [], 1
         while True:

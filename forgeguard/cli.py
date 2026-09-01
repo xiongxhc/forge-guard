@@ -88,8 +88,8 @@ def run_sweep(gl: GitLab, state: State, feishu, cfg: Config,
 
 def main(argv=None) -> int:
     args = argv if argv is not None else sys.argv[1:]
-    if not args or args[0] not in {"sweep", "review", "inject-gate"}:
-        print("usage: forgeguard sweep|review|inject-gate", file=sys.stderr)
+    if not args or args[0] not in {"sweep", "review", "brief", "inject-gate"}:
+        print("usage: forgeguard sweep|review|brief|inject-gate", file=sys.stderr)
         return 2
     cfg = load_config()
     state = State.load(cfg.state_path)
@@ -99,6 +99,15 @@ def main(argv=None) -> int:
         total = {"projects": 0, "protected": 0, "force_push": 0, "unmr": 0, "errors": 0}
         for gl in clients:
             for k, v in run_sweep(gl, state, feishu, cfg, seen=seen).items():
+                total[k] += v
+        print(total)
+        return 0
+    if args[0] == "brief":
+        from .brief import run_brief_sweep
+        seen: set[int] = set()
+        total = {"projects": 0, "generated": 0, "fresh": 0, "failed": 0}
+        for gl in clients:
+            for k, v in run_brief_sweep(gl, cfg, seen=seen).items():
                 total[k] += v
         print(total)
         return 0

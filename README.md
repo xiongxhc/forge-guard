@@ -93,6 +93,7 @@ launchd/cron wrappers before the CLI runs.
 | `FORGEGUARD_FULL_REVIEW_LABEL` | no | `forge-guard:full-review` | GitLab label an author adds to an oversized MR to request a review anyway, up to `FORGEGUARD_DIFF_CAP_FULL`. |
 | `FORGEGUARD_REVIEW_MODE` | no | `files` | Review context mode. `files`: the prompt carries, besides the diff, the full content of every changed file at the MR head SHA and the project's review-rules file (`.forgeguard.md` at the repo root, else `CLAUDE.md`; first 16 KB). `diff`: diff and MR description only (the pre-mode behavior). Context is advisory — any context fetch failure degrades that review to less context, never to no review. |
 | `FORGEGUARD_CONTEXT_CAP` | no | `600000` | Byte budget in `files` mode for fetched file contents. The diff spends the same budget, so a large (labelled) diff leaves less room for file content and the total prompt stays bounded. Files over 100 KB each, binary files, and files past the budget are listed as omitted in the prompt rather than silently dropped. |
+| `FORGEGUARD_BRIEF_DIR` | no | `~/.local/share/forge-guard/briefs` | Where the brief sweep stores per-project auto-generated review briefs, and where `files`-mode reviews look for one to inject. |
 | `REQUESTS_CA_BUNDLE` | no | *(system default)* | Path to a private CA bundle if your GitLab sits behind one. |
 
 ## Per-project review rules (`.forgeguard.md`)
@@ -120,6 +121,26 @@ which is fetched from the code at the head SHA and cannot drift from
 reality. The prompt also instructs the reviewer that code outranks docs —
 a rule contradicted by the visible code is never grounds for an issue on
 its own.
+
+## Auto-generated project briefs (`forgeguard brief`)
+
+For fleets where nobody writes rules files, the brief sweep generates the
+context instead. `forgeguard brief` walks every non-excluded project and,
+where the brief is missing or the default branch has moved ≥30 commits
+since it was generated, downloads a snapshot of the repo (archive at the
+head SHA, no clone, no credentials on disk), runs the Claude CLI over it
+with read-only tools, and stores a ≤4 KB review brief — what the service
+does, layout, which directories are generated/vendored, and the observable
+conventions a diff can silently break — under `FORGEGUARD_BRIEF_DIR`.
+`files`-mode reviews inject a project's brief automatically whenever one
+exists.
+
+Briefs are a cache, not source: regenerated from scratch (never appended
+to) so staleness cannot accumulate, bounded by the refresh threshold, and
+kept out of every repo. Generation costs minutes per project, so one run
+generates at most 20 briefs and the remainder converges on later runs —
+schedule it weekly (`systemd/forgeguard-brief.*.example`). A failed
+generation keeps the previous brief and is counted in the run summary.
 
 ## Setup runbook
 
