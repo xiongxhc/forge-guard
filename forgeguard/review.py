@@ -1,5 +1,7 @@
 from __future__ import annotations
 import json, os, shutil, subprocess, tempfile
+from urllib.parse import quote
+import requests
 from .config import Config
 from .gitlab import GitLab, GitLabError, rebase_url
 from .state import State
@@ -18,6 +20,12 @@ Rules:
 - NO style, taste, naming, or formatting comments. NO speculation. If you are
   not sure something is a real problem, OMIT it — a missed nitpick costs
   nothing; a false alarm costs trust.
+- Judge ONLY the change shown in the diff. Project rules and full file
+  contents, when provided, are context for judging the change; pre-existing
+  issues outside the diff are out of scope.
+- Code outranks docs. Project rules files may be stale; if a stated rule
+  contradicts what the file contents show, trust the code and never raise
+  an issue on the rule's authority alone.
 - verdict "issues" only if a high/medium issue survives the rules above, OR
   feature changes clearly lack test changes.
 - Be terse. Max 4 issues, most severe first.
@@ -27,23 +35,65 @@ Target branch: {target}
 Description:
 {description}
 
-Diff:
+{context}Diff:
 {diff}
 """
 
 SKEPTIC_PROMPT = """You previously reviewed a merge request and reported these issues:
 {issues}
 
-Re-examine each against the diff below as a skeptical senior engineer. KEEP an
-issue only if you can defend its concrete failure scenario; DROP anything that
-is a style preference, speculative, or that you cannot fully justify from the
-diff alone. Respond with ONLY the same JSON schema containing the surviving
-issues. If none survive and tests are adequate, verdict is "clean".
+Re-examine each against the material below as a skeptical senior engineer.
+KEEP an issue only if you can defend its concrete failure scenario; DROP
+anything that is a style preference, speculative, or that you cannot fully
+justify from the diff and provided context alone. Respond with ONLY the same
+JSON schema containing the surviving issues. If none survive and tests are
+adequate, verdict is "clean".
 {{"verdict":"clean"|"issues","summary":"...","issues":[{{"severity":"high|medium|low","file":"...","note":"..."}}],"tests_opinion":"..."}}
 
-Diff:
+{context}Diff:
 {diff}
 """
+
+RULES_FILES = (".forgeguard.md", "CLAUDE.md")
+RULES_CAP = 16_000       # bytes of the rules file injected into the prompt
+FILE_CAP = 100_000       # per-file content cap in files mode
+
+def _fetch_raw(gl: GitLab, pid: int, path: str, ref: str) -> str | None:
+    # Context is advisory: any fetch failure degrades the review to less
+    # context, never to no review.
+    try:
+        return gl.get_raw(f"/projects/{pid}/repository/files/"
+                          f"{quote(path, safe='')}/raw", ok404=True, ref=ref)
+    except (GitLabError, requests.RequestException):
+        return None
+
+def _build_context(gl: GitLab, pid: int, sha: str, files: list, cap: int) -> str:
+    parts = []
+    for name in RULES_FILES:
+        if rules := _fetch_raw(gl, pid, name, sha):
+            parts.append(f"Project review rules ({name} in the repo — apply "
+                         f"them when judging this change):\n{rules[:RULES_CAP]}")
+            break
+    budget, blobs, omitted = cap, [], []
+    for c in files:
+        if c.get("deleted_file"):
+            continue
+        path = c.get("new_path") or c.get("old_path") or ""
+        content = _fetch_raw(gl, pid, path, sha)
+        if content is None or "\x00" in content[:8192]:
+            continue
+        if (size := len(content.encode())) > FILE_CAP or size > budget:
+            omitted.append(path)
+            continue
+        budget -= size
+        blobs.append(f"==== {path} ====\n{content}")
+    if blobs or omitted:
+        head = "Full content of each changed file at the MR head commit:"
+        if omitted:
+            head += (f"\n[{len(omitted)} changed file(s) omitted for size: "
+                     + ", ".join(omitted[:10]) + "]")
+        parts.append("\n".join([head] + ["\n" + b for b in blobs]))
+    return "\n\n".join(parts) + "\n\n" if parts else ""
 
 _CRED_SEGMENTS = {"TOKEN", "SECRET", "KEY", "APIKEY", "PASSWORD", "PASSWD",
                   "CREDENTIAL", "CREDENTIALS", "PAT"}
@@ -180,13 +230,19 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                                 at_gitlab_user=mr["author"]["username"])
                     out["skipped_large"] += 1
                 else:
+                    # The diff spends the same budget: a big (labelled) diff
+                    # leaves less room for file content, so the total prompt
+                    # stays bounded instead of stacking both caps.
+                    budget = max(0, cfg.context_cap_bytes - len(diff.encode()))
+                    context = (_build_context(gl, pid, sha, files, budget)
+                               if cfg.review_mode == "files" else "")
                     v = run_claude(PROMPT.format(title=mr["title"], target=mr["target_branch"],
                                                  description=mr.get("description") or "",
-                                                 diff=diff))
+                                                 context=context, diff=diff))
                     if v["verdict"] != "clean" and v.get("issues"):
                         v = run_claude(SKEPTIC_PROMPT.format(
                             issues=json.dumps(v["issues"], ensure_ascii=False),
-                            diff=diff))
+                            context=context, diff=diff))
                     _upsert_note(gl, pid, iid, _render_note(v))
                     if v["verdict"] == "clean":
                         try:

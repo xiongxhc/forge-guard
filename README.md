@@ -32,8 +32,12 @@ template.
   deployed — on the operator
   machine). Polls open MRs targeting protected branches, runs the
   [Claude Code](https://claude.com/claude-code) CLI (`claude -p`) over the
-  diff and MR description, posts a single upserted review note (edited in
-  place on re-review, never spammed), approves clean MRs (a visible signal
+  diff and MR description — in the default `files` mode also over the full
+  content of each changed file at the MR head plus the project's own review
+  rules (`.forgeguard.md`, falling back to `CLAUDE.md`, fetched from the
+  repo at that SHA), so the reviewer sees whole files and per-project
+  conventions, not just hunks — posts a single upserted review note (edited
+  in place on re-review, never spammed), approves clean MRs (a visible signal
   even though CE can't require it), and posts a Feishu summary with the MR
   URL and head-commit URL. A skeptical second pass filters likely false
   positives before anything is posted. Fail-closed visibility: a failed
@@ -87,7 +91,35 @@ launchd/cron wrappers before the CLI runs.
 | `FORGEGUARD_DIFF_CAP` | no | `300000` | Max diff size in bytes lane 3 will send to `claude -p`; oversized MRs get a "too large for auto-review" note instead of a truncated, hallucination-prone review. |
 | `FORGEGUARD_DIFF_CAP_FULL` | no | `1000000` | Hard cap for MRs carrying the full-review label (below). |
 | `FORGEGUARD_FULL_REVIEW_LABEL` | no | `forge-guard:full-review` | GitLab label an author adds to an oversized MR to request a review anyway, up to `FORGEGUARD_DIFF_CAP_FULL`. |
+| `FORGEGUARD_REVIEW_MODE` | no | `files` | Review context mode. `files`: the prompt carries, besides the diff, the full content of every changed file at the MR head SHA and the project's review-rules file (`.forgeguard.md` at the repo root, else `CLAUDE.md`; first 16 KB). `diff`: diff and MR description only (the pre-mode behavior). Context is advisory — any context fetch failure degrades that review to less context, never to no review. |
+| `FORGEGUARD_CONTEXT_CAP` | no | `600000` | Byte budget in `files` mode for fetched file contents. The diff spends the same budget, so a large (labelled) diff leaves less room for file content and the total prompt stays bounded. Files over 100 KB each, binary files, and files past the budget are listed as omitted in the prompt rather than silently dropped. |
 | `REQUESTS_CA_BUNDLE` | no | *(system default)* | Path to a private CA bundle if your GitLab sits behind one. |
+
+## Per-project review rules (`.forgeguard.md`)
+
+In `files` mode the review prompt includes a rules file from the reviewed
+repo itself: `.forgeguard.md` at the repo root, or `CLAUDE.md` if that's
+absent. It is fetched at the MR's head SHA, so every review sees the version
+current for that branch, and it changes the way everything else in the repo
+changes — through an MR the team can see. Keep it short (only the first
+16 KB is injected) and state things a reviewer can act on:
+
+- **Technical watch-outs** — invariants a diff can silently break
+  ("every route must go through the permission middleware", "schema
+  changes require a paired migration").
+- **Project context** — what the service does, which directories are
+  generated code or vendored and should not draw review comments.
+- **Conventions with a failure mode** — not style preferences; the review
+  prompt discards those anyway.
+
+The file is maintained by people, not appended to by the reviewer — rules
+earn their place by being written down deliberately, and stale rules are
+pruned the same way. Where nobody maintains such a file, the review does
+not depend on one: the durable context is the changed files' own content,
+which is fetched from the code at the head SHA and cannot drift from
+reality. The prompt also instructs the reviewer that code outranks docs —
+a rule contradicted by the visible code is never grounds for an issue on
+its own.
 
 ## Setup runbook
 

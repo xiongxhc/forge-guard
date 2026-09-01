@@ -478,3 +478,104 @@ def test_failed_alert_post_leaves_batch_unflagged_for_retry(tmp_path):
     assert out["merged_unreviewed"] == 4
     assert len(fk.posts) == 1                     # batch retried, nothing lost
     assert fk.posts[0][0] == "⚠️ Merged without review: 4 MRs"
+
+def _ctx_mr():
+    responses.get(f"{API}/merge_requests", json=[{
+        "iid": 40, "project_id": 7, "sha": "h40", "title": "ctx", "description": "",
+        "target_branch": "main", "author": {"username": "cx"}, "labels": [],
+        "updated_at": "2026-09-01T10:00:00Z",
+        "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/40"}],
+        headers={"X-Next-Page": ""})
+    responses.get(f"{API}/projects/7", json={
+        "path_with_namespace": "g/app",
+        "web_url": "https://gitlab.internal.example/g/app"})
+    responses.get(f"{API}/projects/7/merge_requests/40/changes", json={
+        "changes_count": 2,
+        "changes": [{"new_path": "src/app.py", "diff": "+ handler()"},
+                    {"new_path": "gone.py", "diff": "- old", "deleted_file": True}]})
+    responses.get(f"{API}/projects/7/merge_requests/40/notes", json=[],
+                  headers={"X-Next-Page": ""})
+    responses.post(f"{API}/projects/7/merge_requests/40/notes", json={"id": 9})
+    responses.post(f"{API}/projects/7/merge_requests/40/approve", json={})
+
+@responses.activate
+def test_files_mode_injects_rules_and_file_content(tmp_path):
+    _ctx_mr()
+    responses.get(f"{API}/projects/7/repository/files/.forgeguard.md/raw",
+                  body="No new endpoints without permission middleware.")
+    responses.get(f"{API}/projects/7/repository/files/src%2Fapp.py/raw",
+                  body="def handler(): pass")
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    assert cfg.review_mode == "files"
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude", return_value=verdict) as rc:
+        out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
+    assert out["reviewed"] == 1
+    prompt = rc.call_args.args[0]
+    assert "Project review rules (.forgeguard.md" in prompt
+    assert "No new endpoints without permission middleware." in prompt
+    assert "==== src/app.py ====\ndef handler(): pass" in prompt
+    assert "gone.py ====" not in prompt                 # deleted file not fetched
+    raw = [c.request.url for c in responses.calls if "/repository/files/" in c.request.url]
+    assert not any("gone.py" in u for u in raw)
+
+@responses.activate
+def test_files_mode_claude_md_fallback_and_skeptic_gets_context(tmp_path):
+    _ctx_mr()
+    responses.get(f"{API}/projects/7/repository/files/.forgeguard.md/raw",
+                  status=404)
+    responses.get(f"{API}/projects/7/repository/files/CLAUDE.md/raw",
+                  body="Use the centralized API client.")
+    responses.get(f"{API}/projects/7/repository/files/src%2Fapp.py/raw",
+                  body="def handler(): pass")
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    bad = {"verdict": "issues", "summary": "s",
+           "issues": [{"severity": "high", "file": "src/app.py", "note": "n"}],
+           "tests_opinion": "f"}
+    clean = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude", side_effect=[bad, clean]) as rc:
+        run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
+    first, skeptic = rc.call_args_list[0].args[0], rc.call_args_list[1].args[0]
+    for prompt in (first, skeptic):
+        assert "Project review rules (CLAUDE.md" in prompt
+        assert "Use the centralized API client." in prompt
+        assert "==== src/app.py ====" in prompt
+
+@responses.activate
+def test_diff_mode_fetches_no_context(tmp_path):
+    _ctx_mr()
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json"),
+                           FORGEGUARD_REVIEW_MODE="diff"))
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude", return_value=verdict) as rc:
+        out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
+    assert out["reviewed"] == 1
+    assert not any("/repository/files/" in c.request.url for c in responses.calls)
+    assert "Project review rules" not in rc.call_args.args[0]
+
+@responses.activate
+def test_files_mode_degrades_when_context_fetches_fail(tmp_path):
+    _ctx_mr()
+    responses.get(f"{API}/projects/7/repository/files/.forgeguard.md/raw", status=500)
+    responses.get(f"{API}/projects/7/repository/files/CLAUDE.md/raw", status=404)
+    responses.get(f"{API}/projects/7/repository/files/src%2Fapp.py/raw", status=500)
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude", return_value=verdict) as rc:
+        out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
+    assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0, "merged_unreviewed": 0}
+    assert "Project review rules" not in rc.call_args.args[0]
+    assert "+ handler()" in rc.call_args.args[0]        # diff still reviewed
+
+@responses.activate
+def test_files_mode_omits_oversized_file_content(tmp_path):
+    _ctx_mr()
+    responses.get(f"{API}/projects/7/repository/files/src%2Fapp.py/raw",
+                  body="y" * 100_001)
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude", return_value=verdict) as rc:
+        run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
+    prompt = rc.call_args.args[0]
+    assert "omitted for size" in prompt and "src/app.py" in prompt
+    assert "y" * 1000 not in prompt

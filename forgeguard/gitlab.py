@@ -29,6 +29,15 @@ class GitLab:
             raise GitLabError(r.status_code, path)
         return r.json()
 
+    def get_raw(self, path: str, ok404: bool = False, **params) -> str | None:
+        # For endpoints that serve file content, not JSON (e.g. /files/…/raw).
+        r = self.s.get(self._url(path), params=params, timeout=30)
+        if r.status_code == 404 and ok404:
+            return None
+        if r.status_code >= 400:
+            raise GitLabError(r.status_code, path)
+        return r.text
+
     def get_all(self, path: str, **params) -> list:
         out, page = [], 1
         while True:

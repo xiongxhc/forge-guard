@@ -36,6 +36,8 @@ class Config:
     diff_cap_bytes: int
     diff_cap_full: int
     full_review_label: str
+    review_mode: str
+    context_cap_bytes: int
 
 def _require(env: Mapping[str, str], key: str) -> str:
     val = env.get(key, "").strip()
@@ -48,6 +50,10 @@ def _csv(raw: str) -> list[str]:
 
 def load_config(env: Mapping[str, str] = os.environ) -> Config:
     home = env.get("HOME", os.path.expanduser("~"))
+    mode = env.get("FORGEGUARD_REVIEW_MODE", "files").strip()
+    if mode not in ("diff", "files"):
+        raise SystemExit(f"forge-guard: FORGEGUARD_REVIEW_MODE must be "
+                         f"'diff' or 'files', got {mode!r}")
     return Config(
         gitlab_url=_require(env, "FORGEGUARD_GITLAB_URL").rstrip("/"),
         token=_require(env, "FORGEGUARD_GITLAB_TOKEN"),
@@ -65,4 +71,6 @@ def load_config(env: Mapping[str, str] = os.environ) -> Config:
         diff_cap_bytes=int(env.get("FORGEGUARD_DIFF_CAP", "300000")),
         diff_cap_full=int(env.get("FORGEGUARD_DIFF_CAP_FULL", "1000000")),
         full_review_label=env.get("FORGEGUARD_FULL_REVIEW_LABEL", "forge-guard:full-review"),
+        review_mode=mode,
+        context_cap_bytes=int(env.get("FORGEGUARD_CONTEXT_CAP", "600000")),
     )

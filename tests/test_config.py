@@ -56,3 +56,12 @@ def test_review_branches_review_only():
     assert not cfg.branch_match("release/2.1.0")   # protection untouched
     cfg = load_config(BASE)
     assert not cfg.review_match("release/2.1.0")   # default empty
+
+def test_review_mode_default_and_override():
+    assert load_config(BASE).review_mode == "files"
+    assert load_config(BASE).context_cap_bytes == 600_000
+    assert load_config(dict(BASE, FORGEGUARD_REVIEW_MODE="diff")).review_mode == "diff"
+
+def test_review_mode_invalid_exits():
+    with pytest.raises(SystemExit):
+        load_config(dict(BASE, FORGEGUARD_REVIEW_MODE="checkout"))
