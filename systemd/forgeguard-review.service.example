@@ -1,0 +1,6 @@
+[Unit]
+Description=forge-guard MR review tick
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -lc "set -a && source %h/.config/forge-guard/forge-guard.env && set +a && cd __REPO__/forge-guard && exec .venv/bin/python -m forgeguard.cli review"

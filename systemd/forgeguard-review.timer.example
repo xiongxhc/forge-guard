@@ -1,0 +1,9 @@
+[Unit]
+Description=forge-guard review every 15 minutes
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=900
+
+[Install]
+WantedBy=timers.target

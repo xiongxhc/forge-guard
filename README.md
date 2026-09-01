@@ -6,7 +6,7 @@ approvals, no push rules, and no group-level protected branches.
 
 Without those, nothing stops a direct push or a local merge from landing
 straight in a production branch. forge-guard closes that gap with three
-lanes, no always-on service — everything is a scheduled tick (launchd on
+lanes, no always-on service — everything is a scheduled tick (systemd/launchd on
 macOS; cron works the same way) against the GitLab API, plus one central CI
 template.
 
@@ -109,9 +109,25 @@ launchd/cron wrappers before the CLI runs.
    ```sh
    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
    ```
-5. **Install the plists** (macOS; on Linux, equivalent cron entries for
-   `forgeguard.cli sweep` hourly and `forgeguard.cli review` every 15
-   minutes). Copy each `.example` file from `launchd/` to
+5. **Install the schedules** — systemd user timers on Linux, launchd on
+   macOS (both run `forgeguard.cli sweep` hourly and `forgeguard.cli
+   review` every 15 minutes).
+
+   **Linux (systemd):** copy each `.example` file from `systemd/` to
+   `~/.config/systemd/user/`, stripping the `.example` suffix and
+   substituting `__REPO__` for the absolute path to this checkout:
+   ```sh
+   for f in systemd/*.example; do
+     dest=~/.config/systemd/user/$(basename "${f%.example}")
+     sed "s#__REPO__#$(pwd)#g" "$f" > "$dest"
+   done
+   systemctl --user daemon-reload
+   systemctl --user enable --now forgeguard-review.timer forgeguard-sweep.timer
+   loginctl enable-linger $USER   # keep timers running with no login session
+   ```
+   Tick output lands in the journal: `journalctl --user -u forgeguard-review`.
+
+   **macOS (launchd):** copy each `.example` file from `launchd/` to
    `~/Library/LaunchAgents/`, stripping the `.example` suffix, substituting
    `__REPO__` for the absolute path to this checkout and `__HOME__` for
    your home directory:
@@ -124,8 +140,9 @@ launchd/cron wrappers before the CLI runs.
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.forgeguard.sweep.plist
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.forgeguard.review.plist
    ```
-6. **Watch the first sweep** in `~/Library/Logs/ForgeGuard/sweep.log` and
-   confirm protection/violation messages land in the Feishu group.
+6. **Watch the first sweep** (journal on Linux,
+   `~/Library/Logs/ForgeGuard/sweep.log` on macOS) and confirm
+   protection/violation messages land in the Feishu group.
 
 ## Rollout order
 
