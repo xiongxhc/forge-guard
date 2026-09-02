@@ -47,12 +47,42 @@ def test_run_claude_raises_limit_with_reset_time():
     assert e.value.resets_at == 1788348600
     assert e.value.window == "five_hour"
 
-def test_run_claude_raises_limit_from_error_text_without_event():
-    fake = _proc(_stream("Claude AI usage limit reached", is_error=True), returncode=1)
+@pytest.mark.parametrize("text", [
+    "Claude AI usage limit reached",
+    "You've hit your session limit · resets 3:30pm (Asia/Dubai)",   # seen on the box 2026-09-02
+])
+def test_run_claude_raises_limit_from_error_text_without_event(text):
+    fake = _proc(_stream(text, is_error=True), returncode=0)
     with patch("forgeguard.review.subprocess.run", return_value=fake):
         with pytest.raises(ClaudeLimit) as e:
             run_claude("x")
     assert e.value.resets_at is None
+    assert e.value.detail == text
+
+def test_run_claude_timeout_is_a_runtime_error_not_a_crash():
+    import subprocess
+    with patch("forgeguard.review.subprocess.run",
+               side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=300)):
+        with pytest.raises(RuntimeError, match="timed out"):
+            run_claude("x")
+
+def test_limit_message_falls_back_to_claude_wording(tmp_path):
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    with responses.RequestsMock() as rs:
+        rs.get(f"{API}/merge_requests", json=[{
+            "iid": 5, "project_id": 7, "sha": "h1", "title": "one", "description": "",
+            "target_branch": "main", "author": {"username": "alice"},
+            "updated_at": "2026-08-07T10:00:00Z",
+            "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/5"}],
+            headers={"X-Next-Page": ""})
+        rs.get(f"{API}/projects/7", json={"path_with_namespace": "g/app",
+                                          "web_url": "https://gitlab.internal.example/g/app"})
+        rs.get(f"{API}/projects/7/merge_requests/5/changes", json={"changes": [{"diff": "+ a"}]})
+        with patch("forgeguard.review.run_claude",
+                   side_effect=ClaudeLimit(None, detail="You've hit your session limit · resets 3:30pm (Asia/Dubai)")):
+            run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert "resets 3:30pm" in fk.sent[0][0]
 
 def test_run_claude_other_errors_stay_runtime_errors():
     fake = _proc(_stream("API Error: 500 boom", is_error=True), returncode=1, stderr="boom")
@@ -109,8 +139,11 @@ def test_near_limit_warns_once_per_window(tmp_path, monkeypatch):
     cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
     st, fk = State.load(cfg.state_path), FakeFeishu()
     verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    # Below-threshold payloads carry utilization only inside unifiedWindows.
+    rate = {"status": "allowed", "resetsAt": 1788348600, "rateLimitType": "five_hour",
+            "unifiedWindows": {"five_hour": {"utilization": 0.98, "resetsAt": 1788348600}}}
     with patch("forgeguard.review.run_claude", return_value=verdict), \
-         patch.dict(review.RATE_LIMIT, RATE, clear=True):
+         patch.dict(review.RATE_LIMIT, rate, clear=True):
         out = run_review_tick(GitLab(cfg), st, fk, cfg)
     assert out["reviewed"] == 2
     warns = [t for t, _ in fk.sent if "98%" in t]
