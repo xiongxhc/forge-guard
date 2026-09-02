@@ -165,8 +165,9 @@ generation keeps the previous brief and is counted in the run summary.
    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
    ```
 5. **Install the schedules** — systemd user timers on Linux, launchd on
-   macOS (both run `forgeguard.cli sweep` hourly and `forgeguard.cli
-   review` every 15 minutes).
+   macOS (the shipped examples run `forgeguard.cli sweep` hourly and
+   `forgeguard.cli review` every 15 minutes; the review interval is one
+   line in the timer/plist — 5 minutes is fine on a dedicated box).
 
    **Linux (systemd):** copy each `.example` file from `systemd/` to
    `~/.config/systemd/user/`, stripping the `.example` suffix and
