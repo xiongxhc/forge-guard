@@ -1,21 +1,124 @@
-import json, responses
+import json, time, pytest, responses
 from urllib.parse import parse_qs
 from unittest.mock import patch
 from forgeguard.config import load_config
 from forgeguard.gitlab import GitLab
 from forgeguard.state import State
-from forgeguard.review import run_claude, run_review_tick
+from forgeguard import review
+from forgeguard.review import ClaudeLimit, run_claude, run_review_tick
 from tests.test_config import BASE
 from tests.test_cli import FakeFeishu
 
 API = "https://gitlab.example.com/api/v4"
 
+CLEAN = '{"verdict":"clean","summary":"ok","issues":[],"tests_opinion":"fine"}'
+RATE = {"status": "allowed_warning", "resetsAt": 1788348600,
+        "rateLimitType": "five_hour", "utilization": 0.98}
+
+def _stream(result_text, rate=None, is_error=False):
+    # claude -p --output-format stream-json: one JSON object per line.
+    lines = [json.dumps({"type": "system", "subtype": "init"})]
+    if rate:
+        lines.append(json.dumps({"type": "rate_limit_event", "rate_limit_info": rate}))
+    lines.append(json.dumps({"type": "result", "is_error": is_error,
+                             "subtype": "error" if is_error else "success",
+                             "result": result_text}))
+    return "\n".join(lines) + "\n"
+
+def _proc(stdout, returncode=0, stderr=""):
+    return type("R", (), {"returncode": returncode, "stdout": stdout, "stderr": stderr})()
+
 def test_run_claude_parses_json_from_noise():
-    fake = type("R", (), {"returncode": 0,
-                          "stdout": 'note\n{"verdict":"clean","summary":"ok","issues":[],"tests_opinion":"fine"}\n',
-                          "stderr": ""})()
-    with patch("forgeguard.review.subprocess.run", return_value=fake):
+    with patch("forgeguard.review.subprocess.run", return_value=_proc(_stream("note\n" + CLEAN))):
         assert run_claude("x")["verdict"] == "clean"
+
+def test_run_claude_records_latest_rate_limit_info():
+    review.RATE_LIMIT.clear()
+    with patch("forgeguard.review.subprocess.run", return_value=_proc(_stream(CLEAN, RATE))):
+        run_claude("x")
+    assert review.RATE_LIMIT == RATE
+
+def test_run_claude_raises_limit_with_reset_time():
+    rate = dict(RATE, status="rejected", utilization=1.0)
+    fake = _proc(_stream("You've hit your usage limit.", rate, is_error=True), returncode=1)
+    with patch("forgeguard.review.subprocess.run", return_value=fake):
+        with pytest.raises(ClaudeLimit) as e:
+            run_claude("x")
+    assert e.value.resets_at == 1788348600
+    assert e.value.window == "five_hour"
+
+def test_run_claude_raises_limit_from_error_text_without_event():
+    fake = _proc(_stream("Claude AI usage limit reached", is_error=True), returncode=1)
+    with patch("forgeguard.review.subprocess.run", return_value=fake):
+        with pytest.raises(ClaudeLimit) as e:
+            run_claude("x")
+    assert e.value.resets_at is None
+
+def test_run_claude_other_errors_stay_runtime_errors():
+    fake = _proc(_stream("API Error: 500 boom", is_error=True), returncode=1, stderr="boom")
+    with patch("forgeguard.review.subprocess.run", return_value=fake):
+        with pytest.raises(RuntimeError) as e:
+            run_claude("x")
+    assert not isinstance(e.value, ClaudeLimit)
+
+def _two_mrs():
+    responses.get(f"{API}/merge_requests", json=[
+        {"iid": 5, "project_id": 7, "sha": "h1", "title": "one", "description": "",
+         "target_branch": "main", "author": {"username": "alice"},
+         "updated_at": "2026-08-07T10:00:00Z",
+         "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/5"},
+        {"iid": 6, "project_id": 7, "sha": "h2", "title": "two", "description": "",
+         "target_branch": "main", "author": {"username": "bob"},
+         "updated_at": "2026-08-07T11:00:00Z",
+         "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/6"}],
+        headers={"X-Next-Page": ""})
+    responses.get(f"{API}/projects/7", json={
+        "path_with_namespace": "g/app",
+        "web_url": "https://gitlab.internal.example/g/app"})
+    for iid in (5, 6):
+        responses.get(f"{API}/projects/7/merge_requests/{iid}/changes",
+                      json={"changes": [{"diff": "+ a"}]})
+
+@responses.activate
+def test_limit_pauses_tick_and_alerts_once_with_resume_time(tmp_path, monkeypatch):
+    monkeypatch.setenv("TZ", "Asia/Dubai"); time.tzset()
+    _two_mrs()
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    with patch("forgeguard.review.run_claude",
+               side_effect=ClaudeLimit(1788348600, "five_hour")) as rc:
+        out = run_review_tick(GitLab(cfg), st, fk, cfg)
+        run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert out == {"reviewed": 0, "skipped_large": 0, "failed": 1, "merged_unreviewed": 0}
+    assert rc.call_count == 2          # one attempt per tick, second MR never tried
+    assert st.get_cursor("mr_updated_after") is None
+    paused = [t for t, _ in fk.sent if "paused" in t]
+    assert len(paused) == 1
+    assert "15:30" in paused[0] and "2 MR" in paused[0]
+    assert not [t for t, _ in fk.sent if "review failed" in t]
+
+@responses.activate
+def test_near_limit_warns_once_per_window(tmp_path, monkeypatch):
+    monkeypatch.setenv("TZ", "Asia/Dubai"); time.tzset()
+    _two_mrs()
+    for iid in (5, 6):
+        responses.get(f"{API}/projects/7/merge_requests/{iid}/notes", json=[],
+                      headers={"X-Next-Page": ""})
+        responses.post(f"{API}/projects/7/merge_requests/{iid}/notes", json={"id": iid})
+        responses.post(f"{API}/projects/7/merge_requests/{iid}/approve", json={})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    with patch("forgeguard.review.run_claude", return_value=verdict), \
+         patch.dict(review.RATE_LIMIT, RATE, clear=True):
+        out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert out["reviewed"] == 2
+    warns = [t for t, _ in fk.sent if "98%" in t]
+    assert len(warns) == 1 and "15:30" in warns[0]
+
+def test_limit_warn_threshold_configurable():
+    assert load_config(BASE).limit_warn == 0.95
+    assert load_config(dict(BASE, FORGEGUARD_LIMIT_WARN="0.8")).limit_warn == 0.8
 
 @responses.activate
 def test_review_tick_posts_note_approves_and_notifies(tmp_path):
@@ -106,9 +209,7 @@ def test_failing_mr_skipped_cursor_held(tmp_path):
     assert st.get_cursor("mr_updated_after") is None
 
 def test_run_claude_scrubs_credentials_from_child_env():
-    fake = type("R", (), {"returncode": 0,
-                          "stdout": '{"verdict":"clean","summary":"ok","issues":[],"tests_opinion":"fine"}',
-                          "stderr": ""})()
+    fake = _proc(_stream(CLEAN))
     env = {"HOME": "/home/x", "PATH": "/usr/bin",
            "FORGEGUARD_GITLAB_TOKEN": "glpat-secret",
            "FORGEGUARD_FEISHU_APP_SECRET": "fs",

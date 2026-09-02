@@ -94,6 +94,7 @@ launchd/cron wrappers before the CLI runs.
 | `FORGEGUARD_REVIEW_MODE` | no | `files` | Review context mode. `files`: the prompt carries, besides the diff, the full content of every changed file at the MR head SHA and the project's review-rules file (`.forgeguard.md` at the repo root, else `CLAUDE.md`; first 16 KB). `diff`: diff and MR description only (the pre-mode behavior). Context is advisory — any context fetch failure degrades that review to less context, never to no review. |
 | `FORGEGUARD_CONTEXT_CAP` | no | `600000` | Byte budget in `files` mode for fetched file contents. The diff spends the same budget, so a large (labelled) diff leaves less room for file content and the total prompt stays bounded. Files over 100 KB each, binary files, and files past the budget are listed as omitted in the prompt rather than silently dropped. |
 | `FORGEGUARD_BRIEF_DIR` | no | `~/.local/share/forge-guard/briefs` | Where the brief sweep stores per-project auto-generated review briefs, and where `files`-mode reviews look for one to inject. |
+| `FORGEGUARD_LIMIT_WARN` | no | `0.95` | Utilization of the Claude usage window (0–1) at which the review lane posts a one-time Feishu warning with the window's reset time. Set above 1 to disable. |
 | `REQUESTS_CA_BUNDLE` | no | *(system default)* | Path to a private CA bundle if your GitLab sits behind one. |
 
 ## Per-project review rules (`.forgeguard.md`)
@@ -228,6 +229,13 @@ The lanes go live in this order, not all at once:
   gate keep enforcing on the GitLab side regardless — nothing new gets
   protected until the next successful sweep, but existing protection never
   lapses.
+- **Claude usage limit pauses the review lane, not the rest.** Reviews run
+  on a Claude subscription with rolling usage windows. When a window fills,
+  the tick stops at the first rejected call, holds its cursor, and posts one
+  Feishu message with the reset time and how many MRs are waiting; later
+  ticks retry quietly until the window resets, then review the backlog in
+  order. A one-time warning goes out earlier at `FORGEGUARD_LIMIT_WARN`.
+  Sweep and quality gate don't use Claude and keep running.
 - **Violations are reported, never reverted.** A force push or a merge
   without an MR gets an alert with the pusher, branch, and commit URL — it
   is never rolled back automatically. Reverting a shared branch is its own

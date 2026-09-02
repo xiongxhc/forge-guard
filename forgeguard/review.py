@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json, os, shutil, subprocess, tempfile
+from datetime import datetime
 from urllib.parse import quote
 import requests
 from .brief import load_brief
@@ -117,21 +118,69 @@ def _claude_binary() -> str:
             or shutil.which("claude")
             or os.path.expanduser("~/.local/bin/claude"))
 
+class ClaudeLimit(RuntimeError):
+    """Claude usage limit hit. resets_at: unix time the window resets, or None."""
+    def __init__(self, resets_at, window: str = "usage"):
+        self.resets_at, self.window = resets_at, window
+        super().__init__(f"Claude {window.replace('_', '-')} usage limit reached")
+
+# Most recent rate_limit_info reported by claude -p (utilization, resetsAt,
+# rateLimitType, status). Module state on purpose: the tick reads it after a
+# review to warn before the limit is actually hit.
+RATE_LIMIT: dict = {}
+
+def fmt_reset(ts) -> str:
+    if not ts:
+        return "an unknown time"
+    t = datetime.fromtimestamp(ts).astimezone()
+    today = datetime.now().astimezone().date()
+    return t.strftime("%H:%M") if t.date() == today else t.strftime("%a %d %b %H:%M")
+
 def run_claude(prompt: str) -> dict:
     # Flags per fleet schedule-lib: without --strict-mcp-config
     # --setting-sources= a scheduled claude -p loads the claude-mem MCP
-    # stack and deadlocks on shared chroma.
-    r = subprocess.run([_claude_binary(), "-p", "--output-format", "text",
-                        "--strict-mcp-config", "--setting-sources="],
+    # stack and deadlocks on shared chroma. stream-json (needs --verbose)
+    # is the only output mode that carries the rate_limit_event, which is
+    # how the tick learns the reset time when the usage limit is hit.
+    r = subprocess.run([_claude_binary(), "-p", "--output-format", "stream-json",
+                        "--verbose", "--strict-mcp-config", "--setting-sources="],
                        input=prompt, capture_output=True, text=True, timeout=300,
                        env=_scrubbed_env(), cwd=tempfile.gettempdir())
+    result, rate = None, None
+    for line in r.stdout.splitlines():
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if o.get("type") == "rate_limit_event":
+            rate = o.get("rate_limit_info") or rate
+        elif o.get("type") == "result":
+            result = o
+    if rate:
+        RATE_LIMIT.clear()
+        RATE_LIMIT.update(rate)
+    rate = rate or {}
+    text = str((result or {}).get("result") or "")
+    failed = r.returncode != 0 or result is None or result.get("is_error")
+    if failed and (rate.get("status") not in (None, "allowed", "allowed_warning")
+                   or "usage limit" in (text + r.stderr).lower()):
+        raise ClaudeLimit(rate.get("resetsAt"), rate.get("rateLimitType", "usage"))
     if r.returncode != 0:
         raise RuntimeError(f"claude exited {r.returncode}: {r.stderr[:200]}")
-    out = r.stdout
+    if result is None or result.get("is_error"):
+        raise RuntimeError(f"claude error: {text[:200]}")
     try:
-        return json.loads(out[out.index("{"):out.rindex("}") + 1])
+        return json.loads(text[text.index("{"):text.rindex("}") + 1])
     except (ValueError, json.JSONDecodeError) as e:
-        raise RuntimeError(f"unparseable claude output: {out[:200]}") from e
+        raise RuntimeError(f"unparseable claude output: {text[:200]}") from e
+
+def _warn_near_limit(state: State, feishu, cfg: Config) -> None:
+    u = RATE_LIMIT.get("utilization") or 0
+    window, resets = RATE_LIMIT.get("rateLimitType", "usage"), RATE_LIMIT.get("resetsAt")
+    if u >= cfg.limit_warn and state.flag_once(f"limitwarn:{window}:{resets}"):
+        feishu.notify(f"⚠️ forge-guard is at {u:.0%} of the Claude {window.replace('_', '-')} "
+                      f"usage limit — it resets at {fmt_reset(resets)}. If it hits 100%, "
+                      f"reviews pause and resume automatically after the reset.")
 
 def _upsert_note(gl: GitLab, pid: int, iid: int, body: str) -> None:
     for note in gl.get_all(f"/projects/{pid}/merge_requests/{iid}/notes"):
@@ -165,7 +214,7 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
     max_updated = cursor or ""
     projects: dict[int, dict] = {}
     try:
-        for mr in mrs:
+        for i, mr in enumerate(mrs):
             pid, iid, sha = mr["project_id"], mr["iid"], mr["sha"]
             try:
                 project = projects.setdefault(pid, gl.get(f"/projects/{pid}"))
@@ -278,8 +327,22 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                         feishu.notify(f"ℹ️ no Feishu mapping for GitLab user '{author}' — "
                                       f"add to forge-guard-usermap.json to enable @mentions")
                     out["reviewed"] += 1
+                    _warn_near_limit(state, feishu, cfg)
                 state.set_cursor(f"reviewed:{pid}:{iid}", sha)
                 max_updated = max(max_updated, mr["updated_at"])
+            except ClaudeLimit as e:
+                # Every further call this tick would fail the same way; stop
+                # here, hold the cursor, and say once per window when the
+                # lane comes back. Next ticks retry silently until it does.
+                out["failed"] += 1
+                if state.flag_once(f"limit:{e.window}:{e.resets_at}"):
+                    waiting = sum(1 for m in mrs[i:] if state.get_cursor(
+                        f"reviewed:{m['project_id']}:{m['iid']}") != m["sha"])
+                    feishu.notify(f"⏸️ forge-guard paused: Claude {e.window.replace('_', '-')} "
+                                  f"usage limit reached. Reviews resume at "
+                                  f"{fmt_reset(e.resets_at)}; {waiting} MR(s) waiting "
+                                  f"will be reviewed then.")
+                break
             except (RuntimeError, KeyError, GitLabError) as e:
                 out["failed"] += 1
                 # Failure ≠ clean review: surface it once per MR head; the held
