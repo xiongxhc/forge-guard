@@ -184,6 +184,7 @@ def test_review_tick_posts_note_approves_and_notifies(tmp_path):
     assert "https://gitlab.example.com/g/app/-/merge_requests/5" in hrefs
     assert "https://gitlab.example.com/g/app/-/commit/head1" in hrefs
     assert any(s.get("text") == "head commit: " for s in flat)
+    assert lines[-1] == [{"tag": "text", "text": "⚙️ auto-review is advisory"}]
     assert st.get_cursor("reviewed:7:5") == "head1"
     assert st.get_cursor("mr_updated_after") == "2026-08-07T10:00:00Z"
 
@@ -734,3 +735,21 @@ def test_files_mode_injects_project_brief(tmp_path):
     assert "Project brief (auto-generated" in prompt
     assert "Django app; routes need auth." in prompt
     assert "forge-guard-brief abc" not in prompt          # marker stripped
+
+@responses.activate
+def test_footer_configurable_and_droppable(tmp_path):
+    verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
+    for footer, expect in (("仅供参考", [{"tag": "text", "text": "仅供参考"}]), ("", None)):
+        responses.reset(); _two_mrs()
+        for iid in (5, 6):
+            responses.get(f"{API}/projects/7/merge_requests/{iid}/notes", json=[],
+                          headers={"X-Next-Page": ""})
+            responses.post(f"{API}/projects/7/merge_requests/{iid}/notes", json={"id": iid})
+            responses.post(f"{API}/projects/7/merge_requests/{iid}/approve", json={})
+        cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / f"s{len(footer)}.json"),
+                               FORGEGUARD_FOOTER=footer))
+        fk = FakeFeishu()
+        with patch("forgeguard.review.run_claude", return_value=verdict):
+            run_review_tick(GitLab(cfg), State.load(cfg.state_path), fk, cfg)
+        last = fk.posts[0][1][-1]
+        assert (last == expect) if expect else (last[0]["text"] == "head commit: ")

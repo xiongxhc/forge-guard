@@ -10,7 +10,6 @@ from .state import State
 
 MARKER = "<!-- forge-guard-review -->"
 
-ADVISORY_NOTE = "⚙️ auto-review is advisory / 自动评审仅供参考"
 
 PROMPT = """You are reviewing a GitLab merge request for an internal team.
 Respond with ONLY a JSON object, no prose, matching:
@@ -333,8 +332,8 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                          [{"tag": "text", "text": "MR: "},
                           {"tag": "a", "text": f"!{iid}", "href": mr_url}],
                          [{"tag": "text", "text": "head commit: "},
-                          {"tag": "a", "text": sha[:8], "href": commit_url}],
-                         [{"tag": "text", "text": ADVISORY_NOTE}]],
+                          {"tag": "a", "text": sha[:8], "href": commit_url}]]
+                        + ([[{"tag": "text", "text": cfg.footer}]] if cfg.footer else []),
                         at_gitlab_user=author)
                     if not feishu.open_id(author) and state.flag_once(f"usermap:{author}"):
                         feishu.notify(f"ℹ️ no Feishu mapping for GitLab user '{author}' — "

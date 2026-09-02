@@ -94,6 +94,7 @@ launchd/cron wrappers before the CLI runs.
 | `FORGEGUARD_REVIEW_MODE` | no | `files` | Review context mode. `files`: the prompt carries, besides the diff, the full content of every changed file at the MR head SHA and the project's review-rules file (`.forgeguard.md` at the repo root, else `CLAUDE.md`; first 16 KB). `diff`: diff and MR description only (the pre-mode behavior). Context is advisory — any context fetch failure degrades that review to less context, never to no review. |
 | `FORGEGUARD_CONTEXT_CAP` | no | `600000` | Byte budget in `files` mode for fetched file contents. The diff spends the same budget, so a large (labelled) diff leaves less room for file content and the total prompt stays bounded. Files over 100 KB each, binary files, and files past the budget are listed as omitted in the prompt rather than silently dropped. |
 | `FORGEGUARD_BRIEF_DIR` | no | `~/.local/share/forge-guard/briefs` | Where the brief sweep stores per-project auto-generated review briefs, and where `files`-mode reviews look for one to inject. |
+| `FORGEGUARD_FOOTER` | no | `⚙️ auto-review is advisory` | Last line of every review card in Feishu. Set to your own wording (bilingual, a link to a policy page, …) or to an empty string to drop the line. |
 | `FORGEGUARD_LIMIT_WARN` | no | `0.95` | Utilization of the Claude usage window (0–1) at which the review lane posts a one-time Feishu warning with the window's reset time. Set above 1 to disable. |
 | `REQUESTS_CA_BUNDLE` | no | *(system default)* | Path to a private CA bundle if your GitLab sits behind one. |
 

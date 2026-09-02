@@ -40,6 +40,7 @@ class Config:
     context_cap_bytes: int
     brief_dir: str
     limit_warn: float
+    footer: str
 
 def _require(env: Mapping[str, str], key: str) -> str:
     val = env.get(key, "").strip()
@@ -78,4 +79,5 @@ def load_config(env: Mapping[str, str] = os.environ) -> Config:
         brief_dir=env.get("FORGEGUARD_BRIEF_DIR",
                           f"{home}/.local/share/forge-guard/briefs"),
         limit_warn=float(env.get("FORGEGUARD_LIMIT_WARN", "0.95")),
+        footer=env.get("FORGEGUARD_FOOTER", "⚙️ auto-review is advisory").strip(),
     )
