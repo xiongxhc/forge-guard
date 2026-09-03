@@ -41,3 +41,7 @@ class State:
 
     def flagged(self, key: str) -> bool:
         return key in self.d["flags"]
+
+    def clear_flags(self, prefix: str, suffix: str) -> None:
+        self.d["flags"] = [key for key in self.d["flags"]
+                           if not (key.startswith(prefix) and key.endswith(suffix))]

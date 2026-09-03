@@ -65,3 +65,23 @@ def test_review_mode_default_and_override():
 def test_review_mode_invalid_exits():
     with pytest.raises(SystemExit):
         load_config(dict(BASE, FORGEGUARD_REVIEW_MODE="checkout"))
+
+def test_review_provider_defaults_to_claude_with_provider_model():
+    cfg = load_config(BASE)
+    assert cfg.review_provider == "claude"
+    assert cfg.review_model == "claude"
+
+def test_codex_review_provider_pins_gpt_5_6_sol():
+    cfg = load_config(dict(BASE, FORGEGUARD_REVIEW_PROVIDER="codex",
+                           FORGEGUARD_REVIEW_MODEL="stale-or-wrong"))
+    assert cfg.review_provider == "codex"
+    assert cfg.review_model == "gpt-5.6-sol"
+
+def test_claude_rollback_ignores_stale_codex_model_value():
+    cfg = load_config(dict(BASE, FORGEGUARD_REVIEW_PROVIDER="claude",
+                           FORGEGUARD_REVIEW_MODEL="gpt-5.6-sol"))
+    assert cfg.review_model == "claude"
+
+def test_review_provider_rejects_unknown_values():
+    with pytest.raises(SystemExit, match="FORGEGUARD_REVIEW_PROVIDER"):
+        load_config(dict(BASE, FORGEGUARD_REVIEW_PROVIDER="other"))

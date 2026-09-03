@@ -30,8 +30,8 @@ template.
   never silent.
 - **Lane 3 — AI review** (advisory, periodic tick — 5 minutes as
   deployed — on the operator
-  machine). Polls open MRs targeting protected branches, runs the
-  [Claude Code](https://claude.com/claude-code) CLI (`claude -p`) over the
+  machine). Polls open MRs targeting protected branches, runs a selectable
+  CLI reviewer (`claude -p` by default, or `codex exec`) over the
   diff and MR description — in the default `files` mode also over the full
   content of each changed file at the MR head plus the project's own review
   rules (`.forgeguard.md`, falling back to `CLAUDE.md`, fetched from the
@@ -51,9 +51,11 @@ template.
   mistaken for a clean one. MRs merged before the tick could review
   their final head are flagged to Feishu as merged-without-review
   (CE cannot require approvals, so fast merges skip the advisory
-  review; this makes the skip visible). And the `claude -p`
-  subprocess runs with a credential-scrubbed environment (no `FORGEGUARD_*`
-  or secret-shaped variables).
+  review; this makes the skip visible). The model subprocess runs with a
+  credential-scrubbed environment (no `FORGEGUARD_*` or secret-shaped
+  variables). Codex also runs without shell, multi-agent, web-search, or local
+  image tools, so untrusted MR text cannot turn the reviewer into a host-file
+  reader.
 
 Notifications currently target [Feishu/Lark](https://www.larksuite.com/);
 the notifier is a single small module (`forgeguard/feishu.py`) if you want
@@ -68,7 +70,8 @@ to adapt it to Slack or plain webhooks.
   `FORGEGUARD_GITLAB_EXTRA_TOKENS`).
 - A Feishu custom app (app ID + secret) with permission to post to a group
   chat.
-- For lane 3: the `claude` CLI, logged in.
+- For lane 3: the selected reviewer CLI logged in (`claude` by default, or
+  `codex` when `FORGEGUARD_REVIEW_PROVIDER=codex`).
 
 ## Environment variables
 
@@ -88,14 +91,16 @@ launchd/cron wrappers before the CLI runs.
 | `FORGEGUARD_EXCLUDE` | no | *(empty)* | Comma-separated project-path denylist (archived/sandbox projects, or data repos written by automation that must keep direct push). |
 | `FORGEGUARD_USERMAP` | no | `~/.config/forge-guard/usermap.json` | Path to the GitLab-username → Feishu-open_id JSON map used for @-mentions. |
 | `FORGEGUARD_STATE` | no | `~/.local/share/forge-guard/state.json` | Path to the sweep/review state file (branch-tip SHAs, event cursors). |
-| `FORGEGUARD_DIFF_CAP` | no | `300000` | Max diff size in bytes lane 3 will send to `claude -p`; oversized MRs get a "too large for auto-review" note instead of a truncated, hallucination-prone review. |
+| `FORGEGUARD_REVIEW_PROVIDER` | no | `claude` | CLI used for MR reviews: `claude` or `codex`. Codex is pinned to `gpt-5.6-sol`; completed Feishu review cards show the actual reviewer as `review by <model>`. This does not change weekly brief generation, which still uses Claude. |
+| `FORGEGUARD_CODEX_BIN` | no | discovered from `PATH` | Optional absolute path to the Codex CLI. Codex reviews run at high reasoning with ephemeral sessions, read-only sandboxing, ignored user config/rules, disabled local-read tools, and a structured verdict schema. |
+| `FORGEGUARD_DIFF_CAP` | no | `300000` | Max diff size in bytes lane 3 will send to the reviewer; oversized MRs get a "too large for auto-review" note instead of a truncated, hallucination-prone review. |
 | `FORGEGUARD_DIFF_CAP_FULL` | no | `1000000` | Hard cap for MRs carrying the full-review label (below). |
 | `FORGEGUARD_FULL_REVIEW_LABEL` | no | `forge-guard:full-review` | GitLab label an author adds to an oversized MR to request a review anyway, up to `FORGEGUARD_DIFF_CAP_FULL`. |
 | `FORGEGUARD_REVIEW_MODE` | no | `files` | Review context mode. `files`: the prompt carries, besides the diff, the full content of every changed file at the MR head SHA and the project's review-rules file (`.forgeguard.md` at the repo root, else `CLAUDE.md`; first 16 KB). `diff`: diff and MR description only (the pre-mode behavior). Context is advisory — any context fetch failure degrades that review to less context, never to no review. |
 | `FORGEGUARD_CONTEXT_CAP` | no | `600000` | Byte budget in `files` mode for fetched file contents. The diff spends the same budget, so a large (labelled) diff leaves less room for file content and the total prompt stays bounded. Files over 100 KB each, binary files, and files past the budget are listed as omitted in the prompt rather than silently dropped. |
 | `FORGEGUARD_BRIEF_DIR` | no | `~/.local/share/forge-guard/briefs` | Where the brief sweep stores per-project auto-generated review briefs, and where `files`-mode reviews look for one to inject. |
 | `FORGEGUARD_FOOTER` | no | `⚙️ auto-review is advisory` | Last line of every review card in Feishu. Set to your own wording (bilingual, a link to a policy page, …) or to an empty string to drop the line. |
-| `FORGEGUARD_LIMIT_WARN` | no | `0.95` | Utilization of the Claude usage window (0–1) at which the review lane posts a one-time Feishu warning with the window's reset time. Set above 1 to disable. |
+| `FORGEGUARD_LIMIT_WARN` | no | `0.95` | Utilization of the Claude usage window (0–1) at which the review lane posts a one-time Feishu warning with the window's reset time. Set above 1 to disable. Codex does not currently expose equivalent utilization telemetry here. |
 | `REQUESTS_CA_BUNDLE` | no | *(system default)* | Path to a private CA bundle if your GitLab sits behind one. |
 
 ## Per-project review rules (`.forgeguard.md`)
@@ -231,13 +236,13 @@ The lanes go live in this order, not all at once:
   gate keep enforcing on the GitLab side regardless — nothing new gets
   protected until the next successful sweep, but existing protection never
   lapses.
-- **Claude usage limit pauses the review lane, not the rest.** Reviews run
-  on a Claude subscription with rolling usage windows. When a window fills,
-  the tick stops at the first rejected call, holds its cursor, and posts one
-  Feishu message with the reset time and how many MRs are waiting; later
-  ticks retry quietly until the window resets, then review the backlog in
-  order. A one-time warning goes out earlier at `FORGEGUARD_LIMIT_WARN`.
-  Sweep and quality gate don't use Claude and keep running.
+- **Reviewer usage limits pause the review lane, not the rest.** When the
+  selected CLI reports a usage limit, the tick stops at the first rejected
+  review, holds its cursor, and reports the reset time when the provider
+  supplies one. Claude also exposes rolling-window utilization, so Forge Guard
+  can warn before that window fills through `FORGEGUARD_LIMIT_WARN`. Later
+  ticks retry quietly until the limit resets, then review the backlog in order.
+  Sweep and quality gate don't use the review provider and keep running.
 - **Violations are reported, never reverted.** A force push or a merge
   without an MR gets an alert with the pusher, branch, and commit URL — it
   is never rolled back automatically. Reverting a shared branch is its own

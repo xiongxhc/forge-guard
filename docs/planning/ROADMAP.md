@@ -6,15 +6,15 @@ Design record: `specs/2026-08-07-forge-guard-design.md`.
 
 ## Review depth (added 2026-08-12 — planned, NOT started)
 
-Current lane 3 is single-shot diff-only (Opus via `claude -p`, 1–2 calls/MR,
-~75–110s, ~4–8k input tokens/MR, ~20 MRs/day). Quality acceptable; the items
-below buy precision first, recall second. Grounding data (sampled 2026-08-12):
+Current lane 3 supports Claude or Codex as the MR reviewer (Claude by default;
+the agent-box trial target is GPT-5.6 Sol through `codex exec`, 1–2 calls/MR).
+Quality was acceptable on the prior Claude deployment; compare the provider
+trial on real MRs before claiming improvement. Grounding data (sampled 2026-08-12):
 median MR = 14KB diff / 234KB full changed-files; 22/100 recent MRs target
 prod-ish branches (main/master/prod/develop-105).
 
-0. **Instrument usage first** — switch `run_claude` to `--output-format json`
-   and log tokens/duration/model per review. All go/no-go decisions below use
-   this data. (Near-zero cost.)
+0. **Instrument usage first** — log tokens/duration/model per review for both
+   provider runners. All go/no-go decisions below use this data. (Near-zero cost.)
 1. **Full-file context** — include complete content of changed files alongside
    the diff. Cap: skip files >100KB, total payload ≤300KB, fall back to
    diff-only beyond cap (uncapped worst case seen: 1.6MB on service!211).

@@ -1,4 +1,5 @@
 import json, time, pytest, responses
+from pathlib import Path
 from urllib.parse import parse_qs
 from unittest.mock import patch
 from forgeguard.config import load_config
@@ -91,6 +92,103 @@ def test_run_claude_other_errors_stay_runtime_errors():
             run_claude("x")
     assert not isinstance(e.value, ClaudeLimit)
 
+def test_run_codex_uses_read_only_ephemeral_structured_output(monkeypatch):
+    monkeypatch.setenv("FORGEGUARD_CODEX_BIN", "/opt/codex")
+    monkeypatch.setenv("FORGEGUARD_GITLAB_TOKEN", "must-not-leak")
+
+    def fake_run(cmd, **kwargs):
+        schema_path = Path(cmd[cmd.index("--output-schema") + 1])
+        output_path = Path(cmd[cmd.index("--output-last-message") + 1])
+        schema = json.loads(schema_path.read_text())
+        assert schema["required"] == ["verdict", "summary", "issues", "tests_opinion"]
+        assert schema["properties"]["issues"]["maxItems"] == 4
+        output_path.write_text(CLEAN)
+        assert kwargs["input"] == "review this"
+        assert "FORGEGUARD_GITLAB_TOKEN" not in kwargs["env"]
+        return _proc('{"type":"thread.started"}\n')
+
+    with patch("forgeguard.review.subprocess.run", side_effect=fake_run):
+        verdict = review.run_codex("review this", "gpt-5.6-sol")
+
+    assert verdict["verdict"] == "clean"
+
+def test_run_codex_command_pins_model_and_high_reasoning(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        Path(cmd[cmd.index("--output-last-message") + 1]).write_text(CLEAN)
+        return _proc("")
+
+    with patch("forgeguard.review.subprocess.run", side_effect=fake_run):
+        review.run_codex("x", "gpt-5.6-sol")
+
+    assert seen["cmd"][:3] == [review._codex_binary(), "exec", "--model"]
+    assert seen["cmd"][3] == "gpt-5.6-sol"
+    assert ["--sandbox", "read-only"] == seen["cmd"][
+        seen["cmd"].index("--sandbox"):seen["cmd"].index("--sandbox") + 2]
+    assert "--ephemeral" in seen["cmd"]
+    assert "--ignore-user-config" in seen["cmd"]
+    assert "--ignore-rules" in seen["cmd"]
+    assert "--skip-git-repo-check" in seen["cmd"]
+    assert 'model_reasoning_effort="high"' in seen["cmd"]
+    pairs = list(zip(seen["cmd"], seen["cmd"][1:]))
+    assert ("--disable", "shell_tool") in pairs
+    assert ("--disable", "multi_agent") in pairs
+    assert ("--config", "tools.view_image=false") in pairs
+    assert ("--config", 'web_search="disabled"') in pairs
+    assert seen["cmd"][-1] == "-"
+
+def test_run_codex_invalid_or_missing_result_fails_closed():
+    def invalid(cmd, **kwargs):
+        Path(cmd[cmd.index("--output-last-message") + 1]).write_text("not json")
+        return _proc("")
+
+    with patch("forgeguard.review.subprocess.run", side_effect=invalid):
+        with pytest.raises(RuntimeError, match="unparseable codex output"):
+            review.run_codex("x", "gpt-5.6-sol")
+
+    with patch("forgeguard.review.subprocess.run", return_value=_proc("")):
+        with pytest.raises(RuntimeError, match="no structured output"):
+            review.run_codex("x", "gpt-5.6-sol")
+
+def test_run_codex_quota_failure_raises_provider_limit():
+    fake = _proc('{"type":"error","message":"You have hit your usage limit"}\n',
+                 returncode=1, stderr="warning: retry disabled")
+    with patch("forgeguard.review.subprocess.run", return_value=fake):
+        with pytest.raises(ClaudeLimit) as e:
+            review.run_codex("x", "gpt-5.6-sol")
+    assert e.value.provider == "Codex"
+    assert e.value.resets_at is None
+
+def test_run_codex_timeout_and_nonzero_exit_are_review_failures():
+    import subprocess
+    with patch("forgeguard.review.subprocess.run",
+               side_effect=subprocess.TimeoutExpired(cmd="codex", timeout=300)):
+        with pytest.raises(RuntimeError, match="codex timed out after 300s"):
+            review.run_codex("x", "gpt-5.6-sol")
+
+    with patch("forgeguard.review.subprocess.run",
+               return_value=_proc("", returncode=2, stderr="network failed")):
+        with pytest.raises(RuntimeError, match="codex exited 2: network failed"):
+            review.run_codex("x", "gpt-5.6-sol")
+
+@pytest.mark.parametrize("verdict,issues", [
+    ("clean", [{"severity": "high", "file": "app.py", "note": "breaks"}]),
+    ("issues", []),
+])
+def test_run_codex_rejects_semantically_inconsistent_verdict(verdict, issues):
+    inconsistent = json.dumps({"verdict": verdict, "summary": "ok",
+                               "issues": issues, "tests_opinion": "fine"})
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[cmd.index("--output-last-message") + 1]).write_text(inconsistent)
+        return _proc("")
+
+    with patch("forgeguard.review.subprocess.run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="inconsistent codex verdict"):
+            review.run_codex("x", "gpt-5.6-sol")
+
 def _two_mrs():
     responses.get(f"{API}/merge_requests", json=[
         {"iid": 5, "project_id": 7, "sha": "h1", "title": "one", "description": "",
@@ -125,7 +223,9 @@ def test_limit_pauses_tick_and_alerts_once_with_resume_time(tmp_path, monkeypatc
     paused = [t for t, _ in fk.sent if "paused" in t]
     assert len(paused) == 1
     assert "15:30" in paused[0] and "2 MR" in paused[0]
+    assert st.flagged("limit:Claude:five_hour:1788348600")
     assert not [t for t, _ in fk.sent if "review failed" in t]
+    assert "review by" not in str(fk.sent)
 
 @responses.activate
 def test_near_limit_warns_once_per_window(tmp_path, monkeypatch):
@@ -170,11 +270,17 @@ def test_review_tick_posts_note_approves_and_notifies(tmp_path):
                   headers={"X-Next-Page": ""})
     responses.post(f"{API}/projects/7/merge_requests/5/notes", json={"id": 1})
     responses.post(f"{API}/projects/7/merge_requests/5/approve", json={})
-    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json"),
+                           FORGEGUARD_REVIEW_PROVIDER="codex"))
     st, fk = State.load(cfg.state_path), FakeFeishu()
+    st.flag_once("limit:Codex:weekly:unknown")
     verdict = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "has tests"}
-    with patch("forgeguard.review.run_claude", return_value=verdict):
+    with patch("forgeguard.review.run_codex", return_value=verdict) as rc, \
+         patch("forgeguard.review.run_claude") as claude:
         out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    rc.assert_called_once()
+    assert rc.call_args.args[1] == "gpt-5.6-sol"
+    claude.assert_not_called()
     assert out == {"reviewed": 1, "skipped_large": 0, "failed": 0, "merged_unreviewed": 0}
     title, lines, at_user = fk.posts[0]
     assert title == "✅ Approved: feat: x"
@@ -184,9 +290,14 @@ def test_review_tick_posts_note_approves_and_notifies(tmp_path):
     assert "https://gitlab.example.com/g/app/-/merge_requests/5" in hrefs
     assert "https://gitlab.example.com/g/app/-/commit/head1" in hrefs
     assert any(s.get("text") == "head commit: " for s in flat)
+    assert [{"tag": "text", "text": "review by gpt-5.6-sol"}] in lines
     assert lines[-1] == [{"tag": "text", "text": "⚙️ auto-review is advisory"}]
+    note_call = next(c for c in responses.calls
+                     if c.request.method == "POST" and c.request.url.endswith("/notes"))
+    assert "review by" not in parse_qs(note_call.request.body)["body"][0]
     assert st.get_cursor("reviewed:7:5") == "head1"
     assert st.get_cursor("mr_updated_after") == "2026-08-07T10:00:00Z"
+    assert not st.flagged("limit:Codex:weekly:unknown")
 
 @responses.activate
 def test_oversized_diff_skipped(tmp_path):
@@ -283,6 +394,7 @@ def test_failed_review_alerts_feishu_once_per_head(tmp_path):
     assert len(alerts) == 1
     assert "https://gitlab.example.com/g/app/-/merge_requests/5" in alerts[0]
     assert "claude died" in alerts[0]
+    assert "review by" not in str(fk.sent)
 
 def _big_mr(labels=None, sha="h2"):
     responses.get(f"{API}/merge_requests", json=[{
@@ -313,6 +425,7 @@ def test_oversized_diff_alerts_once_per_mr_with_label_hint(tmp_path):
     flat = [s for line in lines for s in line]
     assert "https://gitlab.example.com/g/app/-/merge_requests/6" in [s.get("href") for s in flat]
     assert any("How to get it reviewed" in s.get("text", "") and "forge-guard:full-review" in s.get("text", "") for s in flat)
+    assert "review by" not in str(fk.posts)
     body = parse_qs([c for c in responses.calls if "/notes" in c.request.url and c.request.body][-1].request.body)["body"][0]
     assert "forge-guard:full-review" in body
     # a new push to the same still-oversized MR: note refreshed, no second alert
@@ -503,6 +616,7 @@ def test_merged_without_review_alerts_once(tmp_path):
     assert at_user == "spd"
     flat = [s for line in lines for s in line]
     assert "https://gitlab.example.com/g/app/-/merge_requests/30" in [s.get("href") for s in flat]
+    assert "review by" not in str(fk.posts)
     responses.reset(); _merged_mr_fixture()
     out = run_review_tick(GitLab(cfg), st, fk, cfg)
     assert len(fk.posts) == 1                      # deduped
@@ -655,7 +769,7 @@ def test_files_mode_injects_rules_and_file_content(tmp_path):
     assert not any("gone.py" in u for u in raw)
 
 @responses.activate
-def test_files_mode_claude_md_fallback_and_skeptic_gets_context(tmp_path):
+def test_codex_files_mode_claude_md_fallback_and_skeptic_gets_context(tmp_path):
     _ctx_mr()
     responses.get(f"{API}/projects/7/repository/files/.forgeguard.md/raw",
                   status=404)
@@ -663,14 +777,16 @@ def test_files_mode_claude_md_fallback_and_skeptic_gets_context(tmp_path):
                   body="Use the centralized API client.")
     responses.get(f"{API}/projects/7/repository/files/src%2Fapp.py/raw",
                   body="def handler(): pass")
-    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json"),
+                           FORGEGUARD_REVIEW_PROVIDER="codex"))
     bad = {"verdict": "issues", "summary": "s",
            "issues": [{"severity": "high", "file": "src/app.py", "note": "n"}],
            "tests_opinion": "f"}
     clean = {"verdict": "clean", "summary": "ok", "issues": [], "tests_opinion": "fine"}
-    with patch("forgeguard.review.run_claude", side_effect=[bad, clean]) as rc:
+    with patch("forgeguard.review.run_codex", side_effect=[bad, clean]) as rc:
         run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
     first, skeptic = rc.call_args_list[0].args[0], rc.call_args_list[1].args[0]
+    assert all(call.args[1] == "gpt-5.6-sol" for call in rc.call_args_list)
     for prompt in (first, skeptic):
         assert "Project review rules (CLAUDE.md" in prompt
         assert "Use the centralized API client." in prompt
@@ -752,4 +868,4 @@ def test_footer_configurable_and_droppable(tmp_path):
         with patch("forgeguard.review.run_claude", return_value=verdict):
             run_review_tick(GitLab(cfg), State.load(cfg.state_path), fk, cfg)
         last = fk.posts[0][1][-1]
-        assert (last == expect) if expect else (last[0]["text"] == "head commit: ")
+        assert (last == expect) if expect else (last[0]["text"] == "review by claude")

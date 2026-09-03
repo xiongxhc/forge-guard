@@ -36,6 +36,8 @@ class Config:
     diff_cap_bytes: int
     diff_cap_full: int
     full_review_label: str
+    review_provider: str
+    review_model: str
     review_mode: str
     context_cap_bytes: int
     brief_dir: str
@@ -53,6 +55,11 @@ def _csv(raw: str) -> list[str]:
 
 def load_config(env: Mapping[str, str] = os.environ) -> Config:
     home = env.get("HOME", os.path.expanduser("~"))
+    provider = env.get("FORGEGUARD_REVIEW_PROVIDER", "claude").strip().lower()
+    if provider not in ("claude", "codex"):
+        raise SystemExit(f"forge-guard: FORGEGUARD_REVIEW_PROVIDER must be "
+                         f"'claude' or 'codex', got {provider!r}")
+    model = "gpt-5.6-sol" if provider == "codex" else "claude"
     mode = env.get("FORGEGUARD_REVIEW_MODE", "files").strip()
     if mode not in ("diff", "files"):
         raise SystemExit(f"forge-guard: FORGEGUARD_REVIEW_MODE must be "
@@ -74,6 +81,8 @@ def load_config(env: Mapping[str, str] = os.environ) -> Config:
         diff_cap_bytes=int(env.get("FORGEGUARD_DIFF_CAP", "300000")),
         diff_cap_full=int(env.get("FORGEGUARD_DIFF_CAP_FULL", "1000000")),
         full_review_label=env.get("FORGEGUARD_FULL_REVIEW_LABEL", "forge-guard:full-review"),
+        review_provider=provider,
+        review_model=model,
         review_mode=mode,
         context_cap_bytes=int(env.get("FORGEGUARD_CONTEXT_CAP", "600000")),
         brief_dir=env.get("FORGEGUARD_BRIEF_DIR",

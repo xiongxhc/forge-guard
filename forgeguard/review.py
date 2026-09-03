@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json, os, re, shutil, subprocess, tempfile
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 import requests
 from .brief import load_brief
@@ -117,12 +118,21 @@ def _claude_binary() -> str:
             or shutil.which("claude")
             or os.path.expanduser("~/.local/bin/claude"))
 
-class ClaudeLimit(RuntimeError):
-    """Claude usage limit hit. resets_at: unix time the window resets, or None;
-    detail: Claude's own wording (carries the reset time when resets_at is None)."""
-    def __init__(self, resets_at, window: str = "usage", detail: str = ""):
-        self.resets_at, self.window, self.detail = resets_at, window, detail
-        super().__init__(f"Claude {window.replace('_', '-')} usage limit reached")
+def _codex_binary() -> str:
+    return (os.environ.get("FORGEGUARD_CODEX_BIN")
+            or shutil.which("codex")
+            or os.path.expanduser("~/.local/bin/codex"))
+
+class ReviewLimit(RuntimeError):
+    """Reviewer usage limit hit; reset time may be unavailable."""
+    def __init__(self, resets_at, window: str = "usage", detail: str = "",
+                 provider: str = "Claude"):
+        self.resets_at, self.window, self.detail, self.provider = (
+            resets_at, window, detail, provider)
+        super().__init__(f"{provider} {window.replace('_', '-')} usage limit reached")
+
+# Backwards-compatible name for callers/tests written before Codex support.
+ClaudeLimit = ReviewLimit
 
 # Claude Code's limit wording has varied ("usage limit reached", "You've hit
 # your session limit · resets 3:30pm"); match the family, not one phrase.
@@ -132,6 +142,31 @@ _LIMIT_TEXT = re.compile(r"(usage|session|weekly|rate) limit|hit your [^.\n]{0,3
 # rateLimitType, status). Module state on purpose: the tick reads it after a
 # review to warn before the limit is actually hit.
 RATE_LIMIT: dict = {}
+
+VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["clean", "issues"]},
+        "summary": {"type": "string"},
+        "issues": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+                    "file": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+                "required": ["severity", "file", "note"],
+                "additionalProperties": False,
+            },
+        },
+        "tests_opinion": {"type": "string"},
+    },
+    "required": ["verdict", "summary", "issues", "tests_opinion"],
+    "additionalProperties": False,
+}
 
 def fmt_reset(ts) -> str:
     if not ts:
@@ -182,6 +217,51 @@ def run_claude(prompt: str) -> dict:
         return json.loads(text[text.index("{"):text.rindex("}") + 1])
     except (ValueError, json.JSONDecodeError) as e:
         raise RuntimeError(f"unparseable claude output: {text[:200]}") from e
+
+def run_codex(prompt: str, model: str) -> dict:
+    with tempfile.TemporaryDirectory(prefix="forgeguard-codex-") as tmp:
+        schema_path = Path(tmp) / "verdict-schema.json"
+        output_path = Path(tmp) / "verdict.json"
+        schema_path.write_text(json.dumps(VERDICT_SCHEMA))
+        cmd = [_codex_binary(), "exec", "--model", model,
+               "--config", 'model_reasoning_effort="high"',
+               "--disable", "shell_tool", "--disable", "multi_agent",
+               "--config", "tools.view_image=false",
+               "--config", 'web_search="disabled"',
+               "--ephemeral", "--sandbox", "read-only",
+               "--ignore-user-config", "--ignore-rules",
+               "--skip-git-repo-check", "--json",
+               "--output-schema", str(schema_path),
+               "--output-last-message", str(output_path), "-"]
+        try:
+            r = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                               timeout=300, env=_scrubbed_env(), cwd=tmp)
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(f"codex timed out after {e.timeout:.0f}s") from e
+        detail = "\n".join(p for p in (r.stderr, r.stdout) if p).strip()
+        if r.returncode != 0 and _LIMIT_TEXT.search(detail):
+            raise ReviewLimit(None, detail=detail[:120], provider="Codex")
+        if r.returncode != 0:
+            raise RuntimeError(f"codex exited {r.returncode}: {detail[:200]}")
+        if not output_path.exists() or not output_path.read_text().strip():
+            raise RuntimeError("codex returned no structured output")
+        text = output_path.read_text()
+        try:
+            verdict = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"unparseable codex output: {text[:200]}") from e
+        if (verdict["verdict"] == "issues") != bool(verdict["issues"]):
+            raise RuntimeError("inconsistent codex verdict and issues")
+        return verdict
+
+def run_reviewer(prompt: str, cfg: Config) -> dict:
+    if cfg.review_provider == "codex":
+        return run_codex(prompt, cfg.review_model)
+    return run_claude(prompt)
+
+def _clear_unknown_limit(state: State, cfg: Config) -> None:
+    provider = "Codex" if cfg.review_provider == "codex" else "Claude"
+    state.clear_flags(f"limit:{provider}:", ":unknown")
 
 def _warn_near_limit(state: State, feishu, cfg: Config) -> None:
     # Top-level utilization only appears once a threshold is crossed; the
@@ -307,13 +387,16 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                         gl, pid, sha, files, budget,
                         brief=load_brief(cfg, project["path_with_namespace"]))
                         if cfg.review_mode == "files" else "")
-                    v = run_claude(PROMPT.format(title=mr["title"], target=mr["target_branch"],
-                                                 description=mr.get("description") or "",
-                                                 context=context, diff=diff))
+                    v = run_reviewer(PROMPT.format(
+                        title=mr["title"], target=mr["target_branch"],
+                        description=mr.get("description") or "",
+                        context=context, diff=diff), cfg)
+                    _clear_unknown_limit(state, cfg)
                     if v["verdict"] != "clean" and v.get("issues"):
-                        v = run_claude(SKEPTIC_PROMPT.format(
+                        v = run_reviewer(SKEPTIC_PROMPT.format(
                             issues=json.dumps(v["issues"], ensure_ascii=False),
-                            context=context, diff=diff))
+                            context=context, diff=diff), cfg)
+                        _clear_unknown_limit(state, cfg)
                     _upsert_note(gl, pid, iid, _render_note(v))
                     if v["verdict"] == "clean":
                         try:
@@ -332,27 +415,31 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                          [{"tag": "text", "text": "MR: "},
                           {"tag": "a", "text": f"!{iid}", "href": mr_url}],
                          [{"tag": "text", "text": "head commit: "},
-                          {"tag": "a", "text": sha[:8], "href": commit_url}]]
+                          {"tag": "a", "text": sha[:8], "href": commit_url}],
+                         [{"tag": "text", "text": f"review by {cfg.review_model}"}]]
                         + ([[{"tag": "text", "text": cfg.footer}]] if cfg.footer else []),
                         at_gitlab_user=author)
                     if not feishu.open_id(author) and state.flag_once(f"usermap:{author}"):
                         feishu.notify(f"ℹ️ no Feishu mapping for GitLab user '{author}' — "
                                       f"add to forge-guard-usermap.json to enable @mentions")
                     out["reviewed"] += 1
-                    _warn_near_limit(state, feishu, cfg)
+                    if cfg.review_provider == "claude":
+                        _warn_near_limit(state, feishu, cfg)
                 state.set_cursor(f"reviewed:{pid}:{iid}", sha)
                 max_updated = max(max_updated, mr["updated_at"])
-            except ClaudeLimit as e:
+            except ReviewLimit as e:
                 # Every further call this tick would fail the same way; stop
                 # here, hold the cursor, and say once per window when the
                 # lane comes back. Next ticks retry silently until it does.
                 out["failed"] += 1
-                if state.flag_once(f"limit:{e.window}:{e.resets_at}"):
+                reset_key = e.resets_at if e.resets_at is not None else "unknown"
+                if state.flag_once(f"limit:{e.provider}:{e.window}:{reset_key}"):
                     waiting = sum(1 for m in mrs[i:] if state.get_cursor(
                         f"reviewed:{m['project_id']}:{m['iid']}") != m["sha"])
                     when = (fmt_reset(e.resets_at) if e.resets_at
-                            else f"an unknown time (Claude said: {e.detail})")
-                    feishu.notify(f"⏸️ forge-guard paused: Claude {e.window.replace('_', '-')} "
+                            else f"an unknown time ({e.provider} said: {e.detail})")
+                    feishu.notify(f"⏸️ forge-guard paused: {e.provider} "
+                                  f"{e.window.replace('_', '-')} "
                                   f"usage limit reached. Reviews resume at {when}; "
                                   f"{waiting} MR(s) waiting will be reviewed then.")
                 break

@@ -17,6 +17,16 @@ def test_flag_once():
     assert st.flag_once("usermap:alice") is True
     assert st.flag_once("usermap:alice") is False
 
+def test_clear_flags_removes_only_matching_limit_episodes():
+    st = State()
+    st.flag_once("limit:Claude:five_hour:unknown")
+    st.flag_once("limit:Claude:five_hour:1788")
+    st.flag_once("limit:Codex:usage:unknown")
+    st.clear_flags("limit:Claude:", ":unknown")
+    assert not st.flagged("limit:Claude:five_hour:unknown")
+    assert st.flagged("limit:Claude:five_hour:1788")
+    assert st.flagged("limit:Codex:usage:unknown")
+
 def test_save_bare_filename(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     st = State()
