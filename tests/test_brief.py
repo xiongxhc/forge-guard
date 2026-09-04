@@ -1,8 +1,10 @@
 import io, os, tarfile
 import responses
+from types import SimpleNamespace
 from unittest.mock import patch
 from forgeguard.config import load_config
 from forgeguard.gitlab import GitLab
+import forgeguard.brief as brief
 from forgeguard.brief import load_brief, run_brief_sweep, _brief_path
 from tests.test_config import BASE
 
@@ -32,6 +34,59 @@ def _project_fixtures(head="abc123"):
         headers={"X-Next-Page": ""})
     responses.get(f"{API}/projects/7/repository/branches/main",
                   json={"commit": {"id": head}})
+
+def test_codex_brief_runs_read_only_in_snapshot(monkeypatch, tmp_path):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured.update(kwargs)
+        output_path = cmd[cmd.index("--output-last-message") + 1]
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("# Service\nRead-only brief.\n")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setenv("FORGEGUARD_GITLAB_TOKEN", "must-not-leak")
+    monkeypatch.setattr(brief.subprocess, "run", fake_run)
+    runner = getattr(brief, "run_codex_brief", None)
+    assert callable(runner), "Codex brief runner is missing"
+
+    text = runner("inspect", cwd=str(snapshot), model="gpt-5.6-sol")
+
+    assert text == "# Service\nRead-only brief."
+    assert captured["input"] == "inspect"
+    assert captured["cwd"] == str(snapshot)
+    assert captured["timeout"] == 600
+    assert "FORGEGUARD_GITLAB_TOKEN" not in captured["env"]
+    cmd = captured["cmd"]
+    assert cmd[1] == "exec"
+    assert cmd[cmd.index("--model") + 1] == "gpt-5.6-sol"
+    assert cmd[cmd.index("--sandbox") + 1] == "read-only"
+    assert "--ephemeral" in cmd
+    assert "--ignore-user-config" in cmd and "--ignore-rules" in cmd
+    assert "--skip-git-repo-check" in cmd
+    assert "shell_tool" not in cmd
+
+@responses.activate
+def test_sweep_routes_generation_to_codex_provider(tmp_path):
+    _project_fixtures()
+    responses.get(f"{API}/projects/7/repository/archive.tar.gz",
+                  body=_archive_bytes())
+    cfg = _cfg(tmp_path, FORGEGUARD_REVIEW_PROVIDER="codex")
+    with patch("forgeguard.brief.run_codex_brief",
+               return_value="Codex brief.") as codex, \
+         patch("forgeguard.brief.run_claude_brief",
+               return_value="Claude brief.") as claude:
+        out = run_brief_sweep(GitLab(cfg), cfg)
+    assert out["generated"] == 1
+    codex.assert_called_once()
+    assert codex.call_args.args[0] == brief.BRIEF_PROMPT
+    assert codex.call_args.kwargs["model"] == "gpt-5.6-sol"
+    assert codex.call_args.kwargs["cwd"].endswith("app-abc123")
+    claude.assert_not_called()
+    assert load_brief(cfg, "g/app") == "Codex brief."
 
 def test_load_brief_strips_marker(tmp_path):
     cfg = _cfg(tmp_path)

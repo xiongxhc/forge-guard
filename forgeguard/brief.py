@@ -73,6 +73,39 @@ def run_claude_brief(prompt: str, cwd: str) -> str:
         raise RuntimeError(f"claude exited {r.returncode}: {r.stderr[:200]}")
     return r.stdout.strip()
 
+def run_codex_brief(prompt: str, cwd: str, model: str) -> str:
+    # Lazy import: review.py imports this module for load_brief.
+    from .review import _codex_binary, _scrubbed_env
+    with tempfile.TemporaryDirectory(prefix="forgeguard-codex-brief-") as tmp:
+        output_path = os.path.join(tmp, "brief.md")
+        cmd = [_codex_binary(), "exec", "--model", model,
+               "--config", 'model_reasoning_effort="high"',
+               "--disable", "multi_agent",
+               "--config", "tools.view_image=false",
+               "--config", 'web_search="disabled"',
+               "--ephemeral", "--sandbox", "read-only",
+               "--ignore-user-config", "--ignore-rules",
+               "--skip-git-repo-check", "--json",
+               "--output-last-message", output_path, "-"]
+        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                           timeout=600, env=_scrubbed_env(), cwd=cwd)
+        detail = "\n".join(p for p in (r.stderr, r.stdout) if p).strip()
+        if r.returncode != 0:
+            raise RuntimeError(f"codex exited {r.returncode}: {detail[:200]}")
+        try:
+            with open(output_path, encoding="utf-8") as f:
+                text = f.read().strip()
+        except OSError as e:
+            raise RuntimeError("codex returned no brief output") from e
+        if not text:
+            raise RuntimeError("codex returned no brief output")
+        return text
+
+def run_brief_provider(prompt: str, cfg: Config, cwd: str) -> str:
+    if cfg.review_provider == "codex":
+        return run_codex_brief(prompt, cwd=cwd, model=cfg.review_model)
+    return run_claude_brief(prompt, cwd=cwd)
+
 def _generate(gl: GitLab, cfg: Config, pid: int, project_path: str, head: str) -> None:
     data = gl.get_bytes(f"/projects/{pid}/repository/archive.tar.gz", sha=head)
     with tempfile.TemporaryDirectory() as tmp:
@@ -80,7 +113,7 @@ def _generate(gl: GitLab, cfg: Config, pid: int, project_path: str, head: str) -
             tar.extractall(tmp, filter="data")
         roots = os.listdir(tmp)
         root = os.path.join(tmp, roots[0]) if len(roots) == 1 else tmp
-        text = run_claude_brief(BRIEF_PROMPT, cwd=root)
+        text = run_brief_provider(BRIEF_PROMPT, cfg, cwd=root)
     if not text:
         raise RuntimeError("empty brief output")
     os.makedirs(cfg.brief_dir, exist_ok=True)
