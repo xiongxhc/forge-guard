@@ -73,6 +73,13 @@ to adapt it to Slack or plain webhooks.
 - For lane 3: the selected reviewer CLI logged in (`claude` by default, or
   `codex` when `FORGEGUARD_REVIEW_PROVIDER=codex`).
 
+Merged-without-review notifications apply only to MRs whose actual `merged_at`
+falls after the previous scan boundary. Comments or commit mentions on old merged
+MRs advance discovery without generating a fresh merge alert. Notifications include
+the merge date/time in UTC and report the absence of a recorded ForgeGuard review;
+they do not infer why a review was missed. Missing or invalid merge dates are not
+treated as new merges.
+
 ## Environment variables
 
 Loaded from `~/.config/forge-guard/forge-guard.env`, sourced by the
