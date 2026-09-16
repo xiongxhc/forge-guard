@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json, os, re, shutil, subprocess, tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 import requests
@@ -303,6 +303,9 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
         params["updated_after"] = cursor
     mrs = [m for m in gl.get_all("/merge_requests", **params)
            if cfg.review_match(m["target_branch"])]
+    if cursor and not state.get_cursor(f"{cursor_key}:merged"):
+        # Keep the previous scan boundary before opened-MR processing advances it.
+        state.set_cursor(f"{cursor_key}:merged", cursor)
     max_updated = cursor or ""
     projects: dict[int, dict] = {}
     try:
@@ -460,6 +463,14 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
         state.save(cfg.state_path)
     return out
 
+def _event_time(value) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc) if parsed.utcoffset() is not None else None
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def _check_merged_without_review(gl: GitLab, state: State, feishu, cfg: Config,
                                  cursor_key: str, out: dict) -> None:
     # Protection guarantees an MR, not a review of it: an author can merge
@@ -467,16 +478,25 @@ def _check_merged_without_review(gl: GitLab, state: State, feishu, cfg: Config,
     # Surface those merges; the first tick only sets a baseline.
     merged_key = f"{cursor_key}:merged"
     baseline = state.get_cursor(merged_key) or state.get_cursor(cursor_key)
-    if not baseline:
+    baseline_at = _event_time(baseline)
+    if baseline_at is None:
         return
     max_updated = baseline
+    max_updated_at = baseline_at
     projects: dict[int, dict] = {}
     fresh: list[dict] = []
     fresh_keys: list[str] = []
     for mr in gl.get_all("/merge_requests", scope="all", state="merged",
                          updated_after=baseline):
         pid, iid, sha = mr["project_id"], mr["iid"], mr["sha"]
-        max_updated = max(max_updated, mr["updated_at"])
+        updated_at = _event_time(mr.get("updated_at"))
+        if updated_at is not None and updated_at > max_updated_at:
+            max_updated, max_updated_at = mr["updated_at"], updated_at
+        # A comment or commit mention can update a months-old merged MR.
+        # Advance discovery past it, but only alert on a merge in this window.
+        merged_at = _event_time(mr.get("merged_at"))
+        if merged_at is None or merged_at <= baseline_at:
+            continue
         if not cfg.review_match(mr["target_branch"]):
             continue
         try:
@@ -492,7 +512,7 @@ def _check_merged_without_review(gl: GitLab, state: State, feishu, cfg: Config,
         # post leaves the alert eligible for retry on the next tick.
         key = f"noreview:{pid}:{iid}:{sha}"
         if not state.flagged(key) and key not in fresh_keys:
-            fresh.append(mr)
+            fresh.append({**mr, "_merge_time": merged_at.strftime("%d %b %Y, %H:%M UTC").lstrip("0")})
             fresh_keys.append(key)
     if len(fresh) > 3:
         rows = []
@@ -506,7 +526,7 @@ def _check_merged_without_review(gl: GitLab, state: State, feishu, cfg: Config,
                 {"tag": "text", "text": " "},
                 {"tag": "a", "text": f"{path}!{mr['iid']}",
                  "href": rebase_url(mr["web_url"], cfg.gitlab_url)},
-                {"tag": "text", "text": f" {mr['title']}"}])
+                {"tag": "text", "text": f" · merged {mr['_merge_time']} · {mr['title']}"}])
         if len(fresh) > 15:
             rows.append([{"tag": "text",
                           "text": f"…and {len(fresh) - 15} more"}])
@@ -522,9 +542,8 @@ def _check_merged_without_review(gl: GitLab, state: State, feishu, cfg: Config,
                   {"tag": "a", "text": f"!{mr['iid']}",
                    "href": rebase_url(mr["web_url"], cfg.gitlab_url)}],
                  [{"tag": "text", "text":
-                   f"Merged into {mr['target_branch']} before forge-guard "
-                   f"reviewed head {mr['sha'][:8]} — the auto-review runs on "
-                   f"a periodic tick; merging within that window skips it."}]],
+                   f"Merged {mr['_merge_time']} into {mr['target_branch']}. "
+                   f"No recorded ForgeGuard review for head {mr['sha'][:8]}."}]],
                 at_gitlab_user=mr["author"]["username"])
             state.flag_once(key)
     state.set_cursor(merged_key, max_updated)

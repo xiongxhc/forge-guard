@@ -588,14 +588,15 @@ def test_review_branch_list_reviews_release_mr(tmp_path):
         out = run_review_tick(GitLab(cfg), State.load(cfg.state_path), FakeFeishu(), cfg)
     assert out["reviewed"] == 1
 
-def _merged_mr_fixture(sha="m1"):
+def _merged_mr_fixture(sha="m1", merged_at="2026-08-07T12:00:00Z",
+                       updated_at="2026-08-07T12:00:00Z", opened=None):
     responses.get(f"{API}/merge_requests",
-                  json=[], headers={"X-Next-Page": ""},
+                  json=opened or [], headers={"X-Next-Page": ""},
                   match=[responses.matchers.query_param_matcher({"state": "opened"}, strict_match=False)])
     responses.get(f"{API}/merge_requests", json=[{
         "iid": 30, "project_id": 7, "sha": sha, "title": "fast merge", "description": "",
         "target_branch": "dev", "author": {"username": "spd"}, "labels": [],
-        "updated_at": "2026-08-07T12:00:00Z",
+        "updated_at": updated_at, "merged_at": merged_at,
         "web_url": "https://gitlab.internal.example/g/app/-/merge_requests/30"}],
         headers={"X-Next-Page": ""},
         match=[responses.matchers.query_param_matcher({"state": "merged"}, strict_match=False)])
@@ -617,9 +618,69 @@ def test_merged_without_review_alerts_once(tmp_path):
     flat = [s for line in lines for s in line]
     assert "https://gitlab.example.com/g/app/-/merge_requests/30" in [s.get("href") for s in flat]
     assert "review by" not in str(fk.posts)
+    assert "7 Aug 2026, 12:00 UTC" in str(fk.posts)
+    assert "No recorded ForgeGuard review" in str(fk.posts)
+    assert "periodic tick" not in str(fk.posts)
     responses.reset(); _merged_mr_fixture()
     out = run_review_tick(GitLab(cfg), st, fk, cfg)
     assert len(fk.posts) == 1                      # deduped
+
+
+@pytest.mark.parametrize("merged_at", [
+    "2026-07-02T20:11:39.762+08:00", None, "bad-date", "2026-08-07T10:00:00",
+])
+@responses.activate
+def test_old_or_unverifiable_merge_updated_today_is_not_alerted(tmp_path, merged_at):
+    _merged_mr_fixture(merged_at=merged_at, updated_at="2026-09-16T17:29:15.349+08:00")
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State(), FakeFeishu()
+    st.set_cursor("mr_updated_after:merged", "2026-09-16T09:00:00Z")
+    out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert out["merged_unreviewed"] == 0
+    assert fk.posts == [] and st.d["flags"] == []
+    assert st.get_cursor("mr_updated_after:merged") == "2026-09-16T17:29:15.349+08:00"
+
+
+@pytest.mark.parametrize("merged_at, expected", [
+    ("2026-08-07T07:30:00Z", 1),
+    ("2026-08-07T10:59:59+04:00", 0),
+    ("2026-08-07T07:00:00Z", 0),
+    ("2026-08-07T07:00:00.001Z", 1),
+])
+@responses.activate
+def test_merge_window_compares_instants_including_offsets_and_boundary(tmp_path, merged_at, expected):
+    _merged_mr_fixture(merged_at=merged_at)
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State(), FakeFeishu()
+    st.set_cursor("mr_updated_after:merged", "2026-08-07T11:00:00+04:00")
+    out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert out["merged_unreviewed"] == expected
+    assert len(fk.posts) == expected
+
+
+@responses.activate
+def test_first_merged_scan_retains_boundary_before_opened_cursor_advances(tmp_path):
+    _merged_mr_fixture(opened=[{"project_id": 7, "iid": 31, "sha": "already",
+        "target_branch": "dev", "updated_at": "2026-08-07T13:00:00Z"}])
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State(), FakeFeishu()
+    st.set_cursor("mr_updated_after", "2026-08-07T00:00:00Z")
+    st.set_cursor("reviewed:7:31", "already")
+    out = run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert st.get_cursor("mr_updated_after") == "2026-08-07T13:00:00Z"
+    assert out["merged_unreviewed"] == 1 and len(fk.posts) == 1
+
+
+@responses.activate
+def test_merged_update_cursor_never_moves_backwards_across_offsets(tmp_path):
+    _merged_mr_fixture(merged_at="2026-07-02T12:00:00Z",
+                       updated_at="2026-08-07T11:30:00+04:00")
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    st, fk = State(), FakeFeishu()
+    st.set_cursor("mr_updated_after:merged", "2026-08-07T08:00:00Z")
+    run_review_tick(GitLab(cfg), st, fk, cfg)
+    assert st.get_cursor("mr_updated_after:merged") == "2026-08-07T08:00:00Z"
+    assert fk.posts == []
 
 @responses.activate
 def test_merged_with_review_not_alerted(tmp_path):
@@ -650,6 +711,7 @@ def _merged_mrs_fixture(n):
         "description": "", "target_branch": "dev",
         "author": {"username": f"spd{i}"}, "labels": [],
         "updated_at": "2026-08-07T12:00:00Z",
+        "merged_at": "2026-08-07T12:00:00Z",
         "web_url": f"https://gitlab.internal.example/g/app/-/merge_requests/{30 + i}"}
         for i in range(n)],
         headers={"X-Next-Page": ""},
@@ -678,6 +740,7 @@ def test_merged_without_review_batches_over_three(tmp_path):
         assert f"https://gitlab.example.com/g/app/-/merge_requests/{iid}" in hrefs
     assert links[0]["text"] == "g/app!30"          # project disambiguates rows
     assert any(s.get("text", "").endswith("fast merge 2") for s in flat)
+    assert "7 Aug 2026, 12:00 UTC" in str(lines)
     assert {"tag": "at", "user_id": "ou_1"} in flat      # mapped author @-tagged
     assert any(s.get("text") == "@spd1" for s in flat)   # unmapped falls back
     responses.reset(); _merged_mrs_fixture(4)
