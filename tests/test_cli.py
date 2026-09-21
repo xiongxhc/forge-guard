@@ -1,4 +1,5 @@
 import responses
+from urllib.parse import parse_qs, urlsplit
 from forgeguard.config import load_config
 from forgeguard.gitlab import GitLab
 from forgeguard.state import State
@@ -37,6 +38,9 @@ def test_first_run_records_tip_silently(tmp_path):
     assert out == {"projects": 1, "protected": 0, "force_push": 0, "unmr": 0, "errors": 0}
     assert st.get_tip(7, "main") == "t1"
     assert fk.sent == []
+    projects_call = next(call for call in responses.calls
+                         if urlsplit(call.request.url).path.endswith("/projects"))
+    assert parse_qs(urlsplit(projects_call.request.url).query)["membership"] == ["True"]
 
 @responses.activate
 def test_force_push_alerts(tmp_path):
