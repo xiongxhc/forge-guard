@@ -15,7 +15,7 @@ def run_sweep(gl: GitLab, state: State, feishu, cfg: Config,
     out = {"projects": 0, "protected": 0, "force_push": 0, "unmr": 0, "errors": 0}
     failed_paths: list[str] = []
     try:
-        for project in gl.get_all("/projects", archived=False):
+        for project in gl.get_all("/projects", archived=False, membership=True):
             if project["path_with_namespace"] in cfg.exclude:
                 continue
             if seen is not None:

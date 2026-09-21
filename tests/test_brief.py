@@ -2,6 +2,7 @@ import io, os, tarfile
 import responses
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 from forgeguard.config import load_config
 from forgeguard.gitlab import GitLab
 import forgeguard.brief as brief
@@ -26,6 +27,19 @@ def _archive_bytes():
         info = tarfile.TarInfo("app-abc123/main.py")
         info.size = len(data)
         tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+def _archive_with_absolute_symlink_bytes():
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        data = b"print('hi')\n"
+        source = tarfile.TarInfo("app-abc123/main.py")
+        source.size = len(data)
+        tar.addfile(source, io.BytesIO(data))
+        link = tarfile.TarInfo("app-abc123/.fvm/flutter_sdk")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "/opt/flutter"
+        tar.addfile(link)
     return buf.getvalue()
 
 def _project_fixtures(head="abc123"):
@@ -107,6 +121,26 @@ def test_sweep_generates_missing_brief(tmp_path):
     assert load_brief(cfg, "g/app") == "A Django app."
     with open(_brief_path(cfg, "g/app")) as f:
         assert f.readline().strip() == "<!-- forge-guard-brief abc123 -->"
+    projects_call = next(call for call in responses.calls
+                         if urlsplit(call.request.url).path.endswith("/projects"))
+    assert parse_qs(urlsplit(projects_call.request.url).query)["membership"] == ["True"]
+
+@responses.activate
+def test_sweep_ignores_archive_symlinks(tmp_path):
+    _project_fixtures()
+    responses.get(f"{API}/projects/7/repository/archive.tar.gz",
+                  body=_archive_with_absolute_symlink_bytes())
+    cfg = _cfg(tmp_path)
+
+    def inspect_snapshot(prompt, cwd):
+        assert os.path.isfile(os.path.join(cwd, "main.py"))
+        assert not os.path.lexists(os.path.join(cwd, ".fvm", "flutter_sdk"))
+        return "A Flutter app."
+
+    with patch("forgeguard.brief.run_claude_brief", side_effect=inspect_snapshot):
+        out = run_brief_sweep(GitLab(cfg), cfg)
+
+    assert out == {"projects": 1, "generated": 1, "fresh": 0, "failed": 0}
 
 @responses.activate
 def test_sweep_skips_fresh_brief(tmp_path):

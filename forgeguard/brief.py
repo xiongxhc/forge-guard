@@ -24,6 +24,11 @@ BRIEF_CAP = 8_000          # stored brief size cap, chars
 REFRESH_COMMITS = 30       # regenerate after this many commits on the default branch
 MAX_PER_RUN = 20           # generation is minutes per project; bound one sweep run
 
+def _source_filter(member: tarfile.TarInfo, destination: str):
+    if member.issym() or member.islnk():
+        return None
+    return tarfile.data_filter(member, destination)
+
 def _brief_path(cfg: Config, project_path: str) -> str:
     return os.path.join(cfg.brief_dir, project_path.replace("/", "__") + ".md")
 
@@ -110,7 +115,7 @@ def _generate(gl: GitLab, cfg: Config, pid: int, project_path: str, head: str) -
     data = gl.get_bytes(f"/projects/{pid}/repository/archive.tar.gz", sha=head)
     with tempfile.TemporaryDirectory() as tmp:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-            tar.extractall(tmp, filter="data")
+            tar.extractall(tmp, filter=_source_filter)
         roots = os.listdir(tmp)
         root = os.path.join(tmp, roots[0]) if len(roots) == 1 else tmp
         text = run_brief_provider(BRIEF_PROMPT, cfg, cwd=root)
@@ -125,7 +130,7 @@ def _generate(gl: GitLab, cfg: Config, pid: int, project_path: str, head: str) -
 
 def run_brief_sweep(gl: GitLab, cfg: Config, seen: set[int] | None = None) -> dict:
     out = {"projects": 0, "generated": 0, "fresh": 0, "failed": 0}
-    for project in gl.get_all("/projects", archived=False):
+    for project in gl.get_all("/projects", archived=False, membership=True):
         path = project["path_with_namespace"]
         if path in cfg.exclude or not project.get("default_branch"):
             continue
