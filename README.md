@@ -98,7 +98,8 @@ launchd/cron wrappers before the CLI runs.
 | `FORGEGUARD_EXCLUDE` | no | *(empty)* | Comma-separated project-path denylist (archived/sandbox projects, or data repos written by automation that must keep direct push). |
 | `FORGEGUARD_USERMAP` | no | `~/.config/forge-guard/usermap.json` | Path to the GitLab-username → Feishu-open_id JSON map used for @-mentions. |
 | `FORGEGUARD_STATE` | no | `~/.local/share/forge-guard/state.json` | Path to the sweep/review state file (branch-tip SHAs, event cursors). |
-| `FORGEGUARD_REVIEW_PROVIDER` | no | `claude` | CLI used for MR reviews and weekly brief generation: `claude` or `codex`. Codex is pinned to `gpt-5.6-sol`; completed Feishu review cards show the actual reviewer as `review by <model>`. |
+| `FORGEGUARD_REVIEW_PROVIDER` | no | `claude` | CLI used for MR reviews and weekly brief generation: `claude` or `codex`. Completed Feishu review cards show the actual reviewer as `review by <model>`. |
+| `FORGEGUARD_REVIEW_MODEL` | no | `gpt-5.6-sol` | Codex model for reviews and briefs; ignored when the provider is Claude. |
 | `FORGEGUARD_CODEX_BIN` | no | discovered from `PATH` | Optional absolute path to the Codex CLI. Codex reviews run at high reasoning with ephemeral sessions, read-only sandboxing, ignored user config/rules, disabled local-read tools, and a structured verdict schema. |
 | `FORGEGUARD_DIFF_CAP` | no | `300000` | Max diff size in bytes lane 3 will send to the reviewer; oversized MRs get a "too large for auto-review" note instead of a truncated, hallucination-prone review. |
 | `FORGEGUARD_DIFF_CAP_FULL` | no | `1000000` | Hard cap for MRs carrying the full-review label (below). |
