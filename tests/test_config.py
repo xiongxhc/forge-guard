@@ -71,10 +71,19 @@ def test_review_provider_defaults_to_claude_with_provider_model():
     assert cfg.review_provider == "claude"
     assert cfg.review_model == "claude"
 
-def test_codex_review_provider_pins_gpt_5_6_sol():
-    cfg = load_config(dict(BASE, FORGEGUARD_REVIEW_PROVIDER="codex",
-                           FORGEGUARD_REVIEW_MODEL="stale-or-wrong"))
+def test_codex_review_provider_defaults_to_gpt_5_6_sol():
+    cfg = load_config(dict(BASE, FORGEGUARD_REVIEW_PROVIDER="codex"))
     assert cfg.review_provider == "codex"
+    assert cfg.review_model == "gpt-5.6-sol"
+
+def test_codex_review_model_override():
+    cfg = load_config(dict(BASE, FORGEGUARD_REVIEW_PROVIDER="codex",
+                           FORGEGUARD_REVIEW_MODEL=" gpt-6.1-sol "))
+    assert cfg.review_model == "gpt-6.1-sol"
+
+def test_empty_codex_review_model_preserves_default():
+    cfg = load_config(dict(BASE, FORGEGUARD_REVIEW_PROVIDER="codex",
+                           FORGEGUARD_REVIEW_MODEL=" "))
     assert cfg.review_model == "gpt-5.6-sol"
 
 def test_claude_rollback_ignores_stale_codex_model_value():

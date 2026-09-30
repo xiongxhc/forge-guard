@@ -59,7 +59,8 @@ def load_config(env: Mapping[str, str] = os.environ) -> Config:
     if provider not in ("claude", "codex"):
         raise SystemExit(f"forge-guard: FORGEGUARD_REVIEW_PROVIDER must be "
                          f"'claude' or 'codex', got {provider!r}")
-    model = "gpt-5.6-sol" if provider == "codex" else "claude"
+    model = (env.get("FORGEGUARD_REVIEW_MODEL", "").strip() or "gpt-5.6-sol"
+             if provider == "codex" else "claude")
     mode = env.get("FORGEGUARD_REVIEW_MODE", "files").strip()
     if mode not in ("diff", "files"):
         raise SystemExit(f"forge-guard: FORGEGUARD_REVIEW_MODE must be "
