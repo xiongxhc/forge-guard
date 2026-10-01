@@ -45,7 +45,8 @@ def main() -> int:
                           capture_output=True, text=True, check=True).stdout.split("\x00")
     verdict = classify(paths, [m for m in msgs if m.strip()])
     if verdict == "skip":
-        print("⚠️ Gate-Skip trailer present — gate bypassed (audited).")
+        print("⚠️ Gate-Skip trailer present — gate bypassed (CI job log only; "
+              "no automatic Feishu audit).")
         return 0
     if verdict == "fail-needs-tests":
         print("❌ forge-guard gate: feature changes with no test changes.\n"
