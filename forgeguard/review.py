@@ -547,12 +547,3 @@ def _check_merged_without_review(gl: GitLab, state: State, feishu, cfg: Config,
                 at_gitlab_user=mr["author"]["username"])
             state.flag_once(key)
     state.set_cursor(merged_key, max_updated)
-
-def inject_gate(gl: GitLab, cfg: Config, apply: bool) -> int:
-    if apply:
-        print("inject-gate --apply is gated on runner verification (see spec "
-              "'To verify'); run without --apply for a dry-run list.")
-        return 2
-    print("inject-gate: dry-run — deployment steps land with the ci-template "
-          "rollout (plan Task 8).")
-    return 0

@@ -10,15 +10,15 @@ lanes, no always-on service — everything is a scheduled tick (systemd/launchd 
 macOS; cron works the same way) against the GitLab API, plus one central CI
 template.
 
-- **Lane 1 — protect-sweep** (hourly). For every project the token reaches,
+- **Lane 1 — protect-sweep** (hourly). For each non-archived project selected
+  by token membership and not excluded,
   ensures each configured branch is protected (no direct push, Developers+
   can merge, no force push), re-protects on drift, and diffs each branch tip
   against the last tick to classify force pushes and merges-without-MR.
   Every protection change, drift correction, and violation is reported to
   Feishu — never auto-reverted; reverting a shared branch is its own
-  incident. Also flips on `only_allow_merge_if_pipeline_succeeds`, but only
-  once a project has the quality-gate CI include (lane 2) — flipping it
-  earlier would block all merges on a project with no pipeline.
+  incident. It does not enable GitLab's pipeline-success merge requirement;
+  the operator enables that after verifying lane 2 on a pilot project.
 - **Lane 2 — quality gate** (mechanical, runs in GitLab CI, not on the
   operator machine). A central CI template (`ci-template/`), hosted in a
   shared `ci-tools` project and added to each project's `.gitlab-ci.yml`,
@@ -26,8 +26,8 @@ template.
   changes. Combined with `only_allow_merge_if_pipeline_succeeds`, this is
   the only lane that actually blocks a merge, and it has no dependency on
   the operator machine. Escape hatch: a `Gate-Skip: <reason>` commit
-  trailer makes the gate pass but fires a loud Feishu alert — auditable,
-  never silent.
+  trailer makes the gate pass and prints a warning in its CI job log.
+  Automatic Feishu alerts for this bypass are not implemented.
 - **Lane 3 — AI review** (advisory, periodic tick — 5 minutes as
   deployed — on the operator
   machine). Polls open MRs targeting protected branches, runs a selectable
@@ -64,10 +64,11 @@ to adapt it to Slack or plain webhooks.
 ## Requirements
 
 - Python 3.12+
-- A GitLab personal access token with `api` scope. An **admin** PAT gives
-  instance-wide sweep coverage; a Maintainer token covers only the projects
-  it maintains (extra Maintainer tokens can be stacked via
-  `FORGEGUARD_GITLAB_EXTRA_TOKENS`).
+- A GitLab personal access token with `api` scope and Maintainer access to
+  the projects whose protection it manages. Sweep and brief discovery use
+  `membership=true`: an admin PAT does **not** make this an instance-wide
+  inventory. Reconcile the selected projects with your expected coverage.
+  Extra tokens can be stacked via `FORGEGUARD_GITLAB_EXTRA_TOKENS`.
 - A Feishu custom app (app ID + secret) with permission to post to a group
   chat.
 - For lane 3: the selected reviewer CLI logged in (`claude` by default, or
@@ -88,7 +89,7 @@ launchd/cron wrappers before the CLI runs.
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `FORGEGUARD_GITLAB_URL` | yes | — | GitLab base URL. Also the URL-rebase target — if your instance's configured hostname is unreachable (GitLab returns it in `web_url`), every URL surfaced anywhere is rebased to this host. |
-| `FORGEGUARD_GITLAB_TOKEN` | yes | — | Primary PAT (admin for instance-wide coverage; see Requirements). |
+| `FORGEGUARD_GITLAB_TOKEN` | yes | — | Primary PAT; sweep/brief selection is membership-based even for admins (see Requirements). |
 | `FORGEGUARD_GITLAB_EXTRA_TOKENS` | no | — | Comma-separated extra Maintainer tokens for groups the primary token can't reach. Sweep and review run once per token; projects are deduped by id, review MR cursors are per-token, and per-MR SHA cursors prevent duplicate reviews across overlapping token views. |
 | `FORGEGUARD_FEISHU_APP_ID` | yes | — | Feishu app ID for the tenant-access-token exchange. |
 | `FORGEGUARD_FEISHU_APP_SECRET` | yes | — | Feishu app secret. |
@@ -160,7 +161,18 @@ generation keeps the previous brief and is counted in the run summary.
 
 ## Setup runbook
 
-1. **Create the env file.** `~/.config/forge-guard/forge-guard.env` — set
+Run the following from the root of a standalone clone of this repository
+(the directory containing `forgeguard/` and `requirements.txt`). The schedules
+use that checkout's virtualenv; there is no nested `forge-guard/` directory.
+
+1. **Create the env file.** Use a private directory and permissions:
+   ```sh
+   mkdir -p ~/.config/forge-guard
+   chmod 700 ~/.config/forge-guard
+   touch ~/.config/forge-guard/forge-guard.env
+   chmod 600 ~/.config/forge-guard/forge-guard.env
+   ```
+   In `~/.config/forge-guard/forge-guard.env`, set
    at minimum `FORGEGUARD_GITLAB_URL`, `FORGEGUARD_GITLAB_TOKEN`,
    `FORGEGUARD_FEISHU_APP_ID`, `FORGEGUARD_FEISHU_APP_SECRET`,
    `FORGEGUARD_FEISHU_CHAT_ID`, and `REQUESTS_CA_BUNDLE` if needed.
@@ -187,10 +199,17 @@ generation keeps the previous brief and is counted in the run summary.
    `~/.config/systemd/user/`, stripping the `.example` suffix and
    substituting `__REPO__` for the absolute path to this checkout:
    ```sh
-   for f in systemd/*.example; do
-     dest=~/.config/systemd/user/$(basename "${f%.example}")
-     sed "s#__REPO__#$(pwd)#g" "$f" > "$dest"
-   done
+   mkdir -p ~/.config/systemd/user
+   .venv/bin/python - <<'PY'
+   from pathlib import Path
+   root = str(Path.cwd())
+   # Quote spaces and escape systemd's percent/dollar expansion.
+   if any(c in root for c in "'\"\\\n\r"):
+       raise SystemExit("Choose a checkout path without quotes, backslashes or newlines")
+   for source in Path("systemd").glob("*.example"):
+       target = Path.home() / ".config/systemd/user" / source.name.removesuffix(".example")
+       target.write_text(source.read_text().replace("__REPO__", root.replace("%", "%%").replace("$", "$$")))
+   PY
    systemctl --user daemon-reload
    systemctl --user enable --now forgeguard-review.timer forgeguard-sweep.timer
    loginctl enable-linger $USER   # keep timers running with no login session
@@ -202,31 +221,61 @@ generation keeps the previous brief and is counted in the run summary.
    `__REPO__` for the absolute path to this checkout and `__HOME__` for
    your home directory:
    ```sh
-   for f in launchd/*.plist.example; do
-     dest=~/Library/LaunchAgents/$(basename "${f%.example}")
-     sed "s#__REPO__#$(pwd)#g; s#__HOME__#$HOME#g" "$f" > "$dest"
-   done
-   mkdir -p ~/Library/Logs/ForgeGuard
+   mkdir -p ~/Library/LaunchAgents ~/Library/Logs/ForgeGuard
+   .venv/bin/python - <<'PY'
+   from pathlib import Path
+   import plistlib
+   root = str(Path.cwd())
+   if "'" in root:
+       raise SystemExit("Choose a checkout path without single quotes")
+   for source in Path("launchd").glob("*.example"):
+       data = plistlib.loads(source.read_bytes())
+       data["ProgramArguments"][-1] = data["ProgramArguments"][-1].replace("__REPO__", root)
+       for key in ("StandardOutPath", "StandardErrorPath"):
+           data[key] = data[key].replace("__HOME__", str(Path.home()))
+       target = Path.home() / "Library/LaunchAgents" / source.name.removesuffix(".example")
+       target.write_bytes(plistlib.dumps(data))
+   PY
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.forgeguard.sweep.plist
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.forgeguard.review.plist
    ```
-6. **Watch the first sweep** (journal on Linux,
-   `~/Library/Logs/ForgeGuard/sweep.log` on macOS) and confirm
-   protection/violation messages land in the Feishu group.
+6. **Verify the first completed runs** (journal on Linux,
+   `~/Library/Logs/ForgeGuard/` on macOS): reconcile sweep project count and
+   zero errors against your expected membership; verify protection on a pilot
+   branch; verify a pilot MR review and its Feishu message. A completed tick
+   can exit 0 with nonzero `errors`/`failed` counts: inspect the summary, not
+   only the service state. Authenticate the reviewer CLI as the same OS user
+   that runs the schedule. Optional briefs require separately enabling
+   `forgeguard-brief.timer` on Linux or providing your own macOS schedule.
 
 ## Rollout order
 
 The lanes go live in this order, not all at once:
 
-1. **Protect-sweep**, for immediate protection on whatever the token
-   reaches.
-2. **Feishu group + alert wiring.**
+1. **Feishu group + alert wiring**, required by the scheduled CLI commands.
+2. **Protect-sweep**, for immediate protection on the selected member projects.
 3. **AI review lane.**
-4. **Quality-gate CI include — last**, announced to the team first (it
-   touches every repo and changes merge behavior). Host the
-   `ci-template/` contents in a shared `ci-tools` project, add each
-   consumer project to that project's job-token allowlist, then add the
-   include to each consumer's `.gitlab-ci.yml`.
+4. **Quality-gate CI include — last**, announced to the team first because
+   it changes merge behavior. Follow the [manual pilot runbook](docs/quality-gate-setup.md)
+   to publish the versioned checker package, pin the include and checker digest,
+   configure access, and prove failing/passing MR pipelines before enabling
+   GitLab's pipeline-success merge requirement. `inject-gate` is not implemented
+   and returns an error; it performs no dry run or fleet rollout.
+
+## Public engine and deployment responsibilities
+
+This repository contains the reusable engine, schedule templates and gate
+runbook. Another company can deploy it without any private overlay. Supply your
+own tokens, Feishu app/group/user map, branch/project policy, review rules,
+reviewer login, and trusted network/CA configuration.
+
+Your deployment owns uptime monitoring, summary/freshness checks, backups of
+`FORGEGUARD_STATE`, upgrades/rollback, network recovery and restart policy.
+Host recovery or VPN agents are supplied separately. The sweep and
+review share one state file; serialize jobs that write it (including manual runs)
+with an operator-owned scheduler or cross-job lock. The example timers do not
+provide that cross-job lock. Back up state only while writers are stopped, and
+restore it before resuming schedules; deleting state loses cursors/deduplication.
 
 ## Limitations
 
@@ -256,10 +305,9 @@ The lanes go live in this order, not all at once:
   without an MR gets an alert with the pusher, branch, and commit URL — it
   is never rolled back automatically. Reverting a shared branch is its own
   incident with its own blast radius.
-- **`Gate-Skip: <reason>` is the audited escape hatch.** It's the only way
-  to land an MR that the quality gate would otherwise block, and using it
-  fires a loud Feishu alert every time — it's meant to be visible, not
-  silent, and every use should be reviewable after the fact.
+- **`Gate-Skip: <reason>` bypasses this quality gate.** The warning is in
+  the CI job log only; there is no automatic Feishu bypass audit. Decide who
+  may use this convention and how your team reviews and retains those logs.
 
 ## Development
 

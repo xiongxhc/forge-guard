@@ -20,6 +20,18 @@ def test_gate_skip_trailer_skips():
     assert check_mr.classify(["src/api.py"] * 5,
                              ["hotfix\n\nGate-Skip: prod incident"]) == "skip"
 
+def test_bypass_output_does_not_claim_unimplemented_audit(monkeypatch, capsys):
+    from types import SimpleNamespace
+    monkeypatch.setattr(check_mr, "_base", lambda ref: "abc")
+    monkeypatch.setattr(check_mr.sys, "argv", ["check_mr.py"])
+    outputs = iter(["src/api.py", "feat: bypass\n\nGate-Skip: incident\x00"])
+    monkeypatch.setattr(check_mr.subprocess, "run",
+                        lambda *args, **kwargs: SimpleNamespace(stdout=next(outputs)))
+    assert check_mr.main() == 0
+    output = capsys.readouterr().out
+    assert "audited" not in output
+    assert "CI job log only" in output
+
 def test_three_source_files_is_feature_even_without_feat_prefix():
     assert check_mr.classify(["a.py", "b.py", "c.py"], ["update stuff"]) == "fail-needs-tests"
 

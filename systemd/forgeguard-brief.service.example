@@ -3,4 +3,4 @@ Description=forge-guard project brief sweep
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -lc "set -a && source %h/.config/forge-guard/forge-guard.env && set +a && cd __REPO__/forge-guard && exec .venv/bin/python -m forgeguard.cli brief"
+ExecStart=/bin/bash -lc "set -a && source '%h/.config/forge-guard/forge-guard.env' && set +a && cd '__REPO__' && exec .venv/bin/python -m forgeguard.cli brief"

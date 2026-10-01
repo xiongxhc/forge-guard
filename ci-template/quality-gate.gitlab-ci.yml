@@ -4,15 +4,19 @@
 # Fails the MR pipeline when the MR contains feature work
 # (feat: commits, or 3+ non-test source files) with zero
 # test-file changes. Escape hatch: a "Gate-Skip: <reason>"
-# commit trailer passes the gate but is audited (Feishu alert
-# from forge-guard's sweep).
+# commit trailer passes the gate and prints a warning in the CI job log.
+# No automatic Feishu bypass alert is implemented.
 #
 # Minimal consumer .gitlab-ci.yml addition:
 #
 #   include:
 #     - project: your-group/ci-tools
-#       ref: dev
+#       ref: <full-reviewed-ci-tools-commit-sha>
 #       file: ci/quality-gate.gitlab-ci.yml
+#
+# Also set the three QUALITY_GATE_TOOL_* variables below in the consumer job.
+# Full package publication, MR rules, permissions and verification instructions:
+# docs/quality-gate-setup.md in the forge-guard repository.
 #
 # Consumers whose pipeline lacks a `test` stage: override
 # `stage:` (same convention as mcp-drift), e.g.
@@ -26,8 +30,7 @@
 #
 # check_mr.py is
 # fetched at job time from THIS project's generic package
-# registry via CI_JOB_TOKEN (the only artifact type job tokens
-# may read cross-project) — each consumer project must be on
+# registry via CI_JOB_TOKEN — each consumer project must be on
 # ci-tools' job-token allowlist (Settings → CI/CD → Job token
 # permissions, or API projects/<ci-tools project id>/job_token_scope/allowlist).
 # ============================================================
@@ -36,26 +39,30 @@ quality-gate:
   image: alpine:3.20
   variables:
     QUALITY_GATE_TOOL_PROJECT: "<ci-tools project id>"  # your-group/ci-tools
-    QUALITY_GATE_TOOL_REF: "dev"
+    QUALITY_GATE_TOOL_REF: "<full-reviewed-ci-tools-commit-sha>"
+    QUALITY_GATE_TOOL_SHA256: "<sha256-of-check_mr.py-at-that-commit>"
     GIT_STRATEGY: clone
     GIT_DEPTH: "0"
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   script:
-    - apk add --no-cache git python3 curl >/dev/null
+    - apk add --no-cache git python3 curl ca-certificates >/dev/null
     - |
-      # Self-signed GitLab cert: trust the runner CA when exposed, else -k
-      # (internal-only host). Fetch is loud on failure — no silent -f.
-      if [ -n "$CI_SERVER_TLS_CA_FILE" ]; then CURL_CA="--cacert $CI_SERVER_TLS_CA_FILE"; else CURL_CA="-k"; fi
+      # Use system trust, or the explicit CA supplied by the runner. Never -k.
+      set --
+      if [ -n "${CI_SERVER_TLS_CA_FILE:-}" ]; then
+        test -r "$CI_SERVER_TLS_CA_FILE" || { echo "Runner CA file is unreadable"; exit 1; }
+        set -- --cacert "$CI_SERVER_TLS_CA_FILE"
+      fi
       URL="$CI_API_V4_URL/projects/$QUALITY_GATE_TOOL_PROJECT/packages/generic/quality-gate/$QUALITY_GATE_TOOL_REF/check_mr.py"
-      code=$(curl -s $CURL_CA --header "JOB-TOKEN: $CI_JOB_TOKEN" -w "%{http_code}" -o check_mr.py "$URL")
+      code=$(curl --silent --show-error "$@" --header "JOB-TOKEN: $CI_JOB_TOKEN" -w "%{http_code}" -o check_mr.py "$URL") || exit 1
       if [ "$code" != "200" ]; then
         echo "quality-gate tool fetch FAILED: HTTP $code from $URL"
-        echo "(403 = this project is missing from ci-tools' job-token allowlist)"
+        echo "Check package publication, allowlist and triggering user's ci-tools permissions."
         exit 1
       fi
-      echo "fetched check_mr.py ($(wc -c < check_mr.py) bytes, ref $QUALITY_GATE_TOOL_REF)"
-    # No git network calls in the job (self-signed cert breaks bare git
-    # fetch): the diff base SHA is an ancestor of the checked-out MR head,
+      printf '%s  check_mr.py\n' "$QUALITY_GATE_TOOL_SHA256" | sha256sum -c - || exit 1
+      echo "verified check_mr.py ($(wc -c < check_mr.py) bytes, ref $QUALITY_GATE_TOOL_REF)"
+    # No extra git network calls: the diff base SHA is an ancestor of the MR head,
     # so the full clone (GIT_DEPTH 0) already contains it.
     - python3 check_mr.py "$CI_MERGE_REQUEST_DIFF_BASE_SHA"
