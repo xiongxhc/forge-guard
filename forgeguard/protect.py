@@ -1,7 +1,7 @@
 from __future__ import annotations
 from urllib.parse import quote
 
-from .gitlab import GitLab
+from .gitlab import GitLab, GitLabError
 
 def _levels(entries) -> list[int]:
     return sorted(e["access_level"] for e in entries or [])
@@ -21,8 +21,19 @@ def ensure_protection(gl: GitLab, project_id: int, branch: str):
     return "protected"
 
 def classify_move(gl: GitLab, project_id: int, branch: str, old: str, new: str) -> dict:
-    base = gl.get(f"/projects/{project_id}/repository/merge_base",
-                  **{"refs[]": [old, new]})
+    try:
+        base = gl.get(f"/projects/{project_id}/repository/merge_base",
+                      **{"refs[]": [old, new]})
+    except GitLabError as error:
+        if error.status != 404 or error.message != "404 Merge Base Not Found":
+            raise
+        # Disconnected histories are non-fast-forward only if both tips exist.
+        # Missing/inaccessible commits must remain coverage failures.
+        for sha in (old, new):
+            commit = gl.get(f"/projects/{project_id}/repository/commits/{quote(sha, safe='')}")
+            if not isinstance(commit, dict) or commit.get("id") != sha:
+                raise error
+        return {"kind": "force_push"}
     if base["id"] != old:
         return {"kind": "force_push"}
     cmp = gl.get(f"/projects/{project_id}/repository/compare",

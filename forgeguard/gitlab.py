@@ -4,9 +4,10 @@ import requests
 from .config import Config
 
 class GitLabError(RuntimeError):
-    def __init__(self, status: int, path: str):
+    def __init__(self, status: int, path: str, message: str | None = None):
         super().__init__(f"GitLab {status} on {path}")
         self.status = status
+        self.message = message
 
 def rebase_url(url: str, base: str) -> str:
     b, u = urlsplit(base), urlsplit(url)
@@ -26,7 +27,13 @@ class GitLab:
         if r.status_code == 404 and ok404:
             return None
         if r.status_code >= 400:
-            raise GitLabError(r.status_code, path)
+            try:
+                payload = r.json()
+            except ValueError:
+                payload = None
+            message = payload.get("message") if isinstance(payload, dict) else None
+            raise GitLabError(r.status_code, path,
+                              message if isinstance(message, str) else None)
         return r.json()
 
     def get_raw(self, path: str, ok404: bool = False, **params) -> str | None:
