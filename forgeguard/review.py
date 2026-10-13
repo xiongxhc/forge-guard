@@ -25,6 +25,13 @@ Rules:
 - Judge ONLY the change shown in the diff. Project rules and full file
   contents, when provided, are context for judging the change; pre-existing
   issues outside the diff are out of scope.
+- For Content Security Policy (CSP) changes, consider style-src,
+  style-src-elem and style-src-attr with their style-src/default-src fallback
+  and effective policy. Flag 'unsafe-inline' only when the supplied material
+  supports a concrete security consequence; an effective nonce/hash can make
+  it ignored, so the token alone is not a defect. Remediation must preserve
+  required styles without weakening security. Static review does not verify
+  deployed headers or browser behavior; never claim a release is verified.
 - Code outranks docs. Project rules files may be stale; if a stated rule
   contradicts what the file contents show, trust the code and never raise
   an issue on the rule's authority alone.
@@ -50,6 +57,13 @@ anything that is a style preference, speculative, or that you cannot fully
 justify from the diff and provided context alone. Respond with ONLY the same
 JSON schema containing the surviving issues. If none survive and tests are
 adequate, verdict is "clean".
+For CSP findings, judge the effective style-src/style-src-elem/style-src-attr
+policy, including style-src/default-src fallback. DROP 'unsafe-inline' findings
+based only on the token: an effective nonce/hash can make it ignored. KEEP only
+a concrete security consequence supported by the supplied material, with
+remediation that preserves required styles without weakening security. Static
+review does not verify deployed headers or browser behavior; never claim a
+release is verified. Pre-existing issues outside the diff remain out of scope.
 {{"verdict":"clean"|"issues","summary":"...","issues":[{{"severity":"high|medium|low","file":"...","note":"..."}}],"tests_opinion":"..."}}
 
 {context}Diff:
