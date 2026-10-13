@@ -114,6 +114,12 @@ launchd/cron wrappers before the CLI runs.
 
 ## Per-project review rules (`.forgeguard.md`)
 
+The built-in review instructions consider CSP style policy weaknesses when
+the changed code and supplied context support a concrete security consequence.
+They account for directive fallback and effective nonce/hash policies rather
+than flagging every `unsafe-inline` token. A clean static review does not verify
+deployed headers, browser behavior, or release readiness.
+
 In `files` mode the review prompt includes a rules file from the reviewed
 repo itself: `.forgeguard.md` at the repo root, or `CLAUDE.md` if that's
 absent. It is fetched at the MR's head SHA, so every review sees the version
