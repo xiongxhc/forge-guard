@@ -1,5 +1,7 @@
 from __future__ import annotations
-import io, os, subprocess, tarfile, tempfile
+import os, subprocess, tempfile
+from collections import deque
+from pathlib import PurePosixPath
 from urllib.parse import quote
 from .config import Config
 from .gitlab import GitLab, GitLabError
@@ -24,10 +26,80 @@ BRIEF_CAP = 8_000          # stored brief size cap, chars
 REFRESH_COMMITS = 30       # regenerate after this many commits on the default branch
 MAX_PER_RUN = 20           # generation is minutes per project; bound one sweep run
 
-def _source_filter(member: tarfile.TarInfo, destination: str):
-    if member.issym() or member.islnk():
-        return None
-    return tarfile.data_filter(member, destination)
+SNAPSHOT_MAX_FILES = 160
+SNAPSHOT_MAX_BYTES = 10 * 1024 * 1024
+SNAPSHOT_FILE_BYTES = 256 * 1024
+SNAPSHOT_MAX_REQUESTS = 240
+SNAPSHOT_PAGE_SIZE = 100
+SNAPSHOT_SKIP_DIRS = {".git", "node_modules", "vendor", ".venv", "venv",
+                      "__pycache__", ".cache", ".next", "dist", "build", ".fvm"}
+SNAPSHOT_SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
+                          ".pdf", ".zip", ".gz", ".tar", ".jar", ".war",
+                          ".mp4", ".mp3", ".woff", ".woff2", ".ttf", ".map",
+                          ".lock", ".min.js", ".min.css"}
+
+
+def _snapshot(gl: GitLab, pid: int, head: str, root: str) -> str:
+    # Breadth first keeps root manifests and representative source ahead of deep trees.
+    pending = deque([("", 1)])
+    seen_dirs = {""}
+    files = size = requests = skipped = 0
+    while pending and requests < SNAPSHOT_MAX_REQUESTS and files < SNAPSHOT_MAX_FILES:
+        path, page = pending.popleft()
+        entries = gl.get(f"/projects/{pid}/repository/tree", ref=head, path=path,
+                         per_page=SNAPSHOT_PAGE_SIZE, page=page, recursive=False)
+        requests += 1
+        if len(entries) == SNAPSHOT_PAGE_SIZE:
+            pending.append((path, page + 1))
+        # Files first; root readmes/configs are collected before descending.
+        for entry in sorted(entries, key=lambda e: (e.get("type") == "tree", e.get("path", ""))):
+            name = entry.get("path", "")
+            parts = PurePosixPath(name).parts
+            if (not parts or name.startswith("/") or ".." in parts or "\\" in name
+                    or any(part in SNAPSHOT_SKIP_DIRS for part in parts)
+                    or str(PurePosixPath(name)) != name):
+                skipped += 1
+                continue
+            if entry.get("type") == "tree":
+                if name not in seen_dirs:
+                    seen_dirs.add(name)
+                    pending.append((name, 1))
+                continue
+            if (entry.get("type") != "blob" or entry.get("mode") not in {"100644", "100755"}
+                    or any(name.lower().endswith(ext) for ext in SNAPSHOT_SKIP_SUFFIXES)):
+                skipped += 1
+                continue
+            if (requests >= SNAPSHOT_MAX_REQUESTS or files >= SNAPSHOT_MAX_FILES
+                    or size >= SNAPSHOT_MAX_BYTES):
+                skipped += 1
+                continue
+            data = gl.get_bytes_bounded(
+                f"/projects/{pid}/repository/files/{quote(name, safe='')}/raw",
+                min(SNAPSHOT_FILE_BYTES, SNAPSHOT_MAX_BYTES - size), ref=head)
+            requests += 1
+            if data is None or b"\0" in data:
+                skipped += 1
+                continue
+            try:
+                data.decode("utf-8")
+            except UnicodeDecodeError:
+                skipped += 1
+                continue
+            target = os.path.join(root, *parts)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as f:
+                f.write(data)
+            files += 1
+            size += len(data)
+    if not files or not size:
+        raise RuntimeError("no usable source files in bounded snapshot")
+    return (f"Snapshot coverage: sampled {files} files, {size} bytes at {head}; "
+            f"{requests} API requests, {skipped} encountered entries omitted. "
+            f"Limits: {SNAPSHOT_MAX_FILES} files, {SNAPSHOT_MAX_BYTES} bytes total, "
+            f"{SNAPSHOT_FILE_BYTES} bytes/file, {SNAPSHOT_MAX_REQUESTS} requests. "
+            "Known generated/vendor/cache paths, binary, oversized, symlink and submodule entries "
+            "are omitted; traversal may stop at limits, so unseen paths are not counted. "
+            "This is partial repository context; infer conventions only from included files.")
 
 def _brief_path(cfg: Config, project_path: str) -> str:
     return os.path.join(cfg.brief_dir, project_path.replace("/", "__") + ".md")
@@ -112,20 +184,16 @@ def run_brief_provider(prompt: str, cfg: Config, cwd: str) -> str:
     return run_claude_brief(prompt, cwd=cwd)
 
 def _generate(gl: GitLab, cfg: Config, pid: int, project_path: str, head: str) -> None:
-    data = gl.get_bytes(f"/projects/{pid}/repository/archive.tar.gz", sha=head)
-    with tempfile.TemporaryDirectory() as tmp:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-            tar.extractall(tmp, filter=_source_filter)
-        roots = os.listdir(tmp)
-        root = os.path.join(tmp, roots[0]) if len(roots) == 1 else tmp
-        text = run_brief_provider(BRIEF_PROMPT, cfg, cwd=root)
+    with tempfile.TemporaryDirectory(prefix="forgeguard-brief-") as root:
+        coverage = _snapshot(gl, pid, head, root)
+        text = run_brief_provider(BRIEF_PROMPT + "\n" + coverage, cfg, cwd=root)
     if not text:
         raise RuntimeError("empty brief output")
     os.makedirs(cfg.brief_dir, exist_ok=True)
     path = _brief_path(cfg, project_path)
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
-        f.write(f"{MARKER_PREFIX}{head} -->\n{text[:BRIEF_CAP]}\n")
+        f.write(f"{MARKER_PREFIX}{head} -->\n{(coverage + chr(10) + chr(10) + text)[:BRIEF_CAP]}\n")
     os.replace(tmp_path, path)
 
 def run_brief_sweep(gl: GitLab, cfg: Config, seen: set[int] | None = None) -> dict:
@@ -154,7 +222,7 @@ def run_brief_sweep(gl: GitLab, cfg: Config, seen: set[int] | None = None) -> di
             _generate(gl, cfg, pid, path, head)
             out["generated"] += 1
         except (RuntimeError, KeyError, OSError, GitLabError,
-                subprocess.TimeoutExpired, tarfile.TarError) as e:
+                subprocess.TimeoutExpired) as e:
             out["failed"] += 1
             print(f"brief failed: {path} — {type(e).__name__}: {str(e)[:160]}")
             continue
