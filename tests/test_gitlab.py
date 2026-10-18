@@ -52,3 +52,22 @@ def test_token_override():
     from tests.test_config import BASE
     gl = GitLab(load_config(dict(BASE)), token="other")
     assert gl.s.headers["PRIVATE-TOKEN"] == "other"
+
+def test_bounded_download_streams_and_closes_before_accumulating(monkeypatch):
+    from types import SimpleNamespace
+    closed = []
+    chunks = []
+    def stream(chunk_size):
+        for chunk in [b'abcd', b'efgh', b'never']:
+            chunks.append(chunk)
+            yield chunk
+    response = SimpleNamespace(status_code=200, iter_content=stream,
+                               close=lambda: closed.append(True))
+    gl = _gl()
+    def get(url, **kwargs):
+        assert kwargs['stream'] is True
+        return response
+    monkeypatch.setattr(gl.s, 'get', get)
+    assert gl.get_bytes_bounded('/file', 5) is None
+    assert chunks == [b'abcd', b'efgh']
+    assert closed == [True]

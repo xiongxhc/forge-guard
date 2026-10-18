@@ -22,7 +22,7 @@ class GitLab:
     def _url(self, path: str) -> str:
         return f"{self.cfg.gitlab_url}/api/v4{path}"
 
-    def get(self, path: str, ok404: bool = False, **params):
+    def get(self, path: str, /, ok404: bool = False, **params):
         r = self.s.get(self._url(path), params=params, timeout=30)
         if r.status_code == 404 and ok404:
             return None
@@ -51,6 +51,21 @@ class GitLab:
         if r.status_code >= 400:
             raise GitLabError(r.status_code, path)
         return r.content
+
+    def get_bytes_bounded(self, path: str, max_bytes: int, **params) -> bytes | None:
+        # Stream before accumulating: oversized files never become an unbounded body.
+        r = self.s.get(self._url(path), params=params, timeout=30, stream=True)
+        try:
+            if r.status_code >= 400:
+                raise GitLabError(r.status_code, path)
+            data = bytearray()
+            for chunk in r.iter_content(chunk_size=8192):
+                if len(data) + len(chunk) > max_bytes:
+                    return None
+                data.extend(chunk)
+            return bytes(data)
+        finally:
+            r.close()
 
     def get_all(self, path: str, **params) -> list:
         out, page = [], 1

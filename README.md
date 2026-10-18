@@ -149,12 +149,19 @@ its own.
 For fleets where nobody writes rules files, the brief sweep generates the
 context instead. `forgeguard brief` walks every non-excluded project and,
 where the brief is missing or the default branch has moved ≥30 commits
-since it was generated, downloads a snapshot of the repo (archive at the
-head SHA, no clone, no credentials on disk), runs the configured review
-provider over it with read-only tools, and stores a ≤4 KB review brief — what
+since it was generated, collects a bounded source sample using GitLab tree
+and streaming raw-file requests pinned to the head SHA (no clone or archive, no credentials on disk),
+runs the configured review provider over it with read-only tools, and stores
+a review brief capped at 8,000 characters — what
 the service does, layout, which directories are generated/vendored, and the
 observable conventions a diff can silently break — under
 `FORGEGUARD_BRIEF_DIR`.
+The sample includes at most 160 files and 10 MiB total, with a 256 KiB
+per-file cap and 240 tree/raw API requests. Breadth-first traversal collects
+root files before deeper directories; known generated/vendor/cache paths,
+binary files, oversized files, symlinks and submodules are omitted. Both the
+provider prompt and saved brief state this partial coverage and its limits.
+An empty usable sample fails generation and preserves the previous brief.
 `files`-mode reviews inject a project's brief automatically whenever one
 exists.
 
