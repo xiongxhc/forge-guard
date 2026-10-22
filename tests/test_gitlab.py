@@ -10,6 +10,22 @@ def test_rebase_url_forces_configured_host():
     assert rebase_url("https://gitlab.internal.example/g/p/-/commit/abc",
                       "https://gitlab.example.com") == "https://gitlab.example.com/g/p/-/commit/abc"
 
+def test_review_text_rewrites_only_exact_configured_origins():
+    from forgeguard.gitlab import rewrite_gitlab_links
+    cfg = load_config(dict(BASE, FORGEGUARD_GITLAB_LINK_ORIGINS="https://old.example"))
+    text = (
+        "[MR](https://old.example/g/p/-/merge_requests/1?q=%2F#note_2) "
+        "<HTTPS://OLD.EXAMPLE/g/p> https://old.example. "
+        "https://old.example.evil/path https://old.example:8443/path "
+        "https://old.example@evil.example/path http://old.example/path "
+        "https://docs.example/?ref=https://old.example/path"
+    )
+    expected = text.replace("https://old.example/g/p", cfg.gitlab_url + "/g/p")
+    expected = expected.replace("HTTPS://OLD.EXAMPLE/g/p", cfg.gitlab_url + "/g/p")
+    expected = expected.replace("https://old.example. ", cfg.gitlab_url + ". ")
+    assert rewrite_gitlab_links(text, cfg) == expected
+    assert rewrite_gitlab_links(text, load_config(BASE)) == text
+
 @responses.activate
 def test_get_all_paginates():
     responses.get("https://gitlab.example.com/api/v4/projects", json=[{"id": 1}],

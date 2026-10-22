@@ -3,6 +3,7 @@ import os
 from fnmatch import fnmatchcase
 from dataclasses import dataclass
 from typing import Mapping
+from urllib.parse import urlsplit
 
 _DEFAULT_BRANCHES = "main,master,prod,production,develop,dev,uat"
 
@@ -43,6 +44,7 @@ class Config:
     brief_dir: str
     limit_warn: float
     footer: str
+    gitlab_link_origins: tuple[str, ...] = ()
 
 def _require(env: Mapping[str, str], key: str) -> str:
     val = env.get(key, "").strip()
@@ -52,6 +54,25 @@ def _require(env: Mapping[str, str], key: str) -> str:
 
 def _csv(raw: str) -> list[str]:
     return [p.strip() for p in raw.split(",") if p.strip()]
+
+def _link_origins(raw: str) -> tuple[str, ...]:
+    origins = []
+    for value in _csv(raw):
+        try:
+            u = urlsplit(value)
+            valid = (u.scheme in ("http", "https") and u.hostname
+                     and u.username is None and u.password is None
+                     and u.path in ("", "/") and "?" not in value and "#" not in value
+                     and not any(ord(c) <= 32 or ord(c) == 127 for c in value)
+                     and "\\" not in value)
+            u.port  # Reject malformed or out-of-range ports.
+            if not valid:
+                raise ValueError
+        except ValueError:
+            raise SystemExit("forge-guard: FORGEGUARD_GITLAB_LINK_ORIGINS must contain "
+                             "only HTTP(S) origins without credentials, paths, queries or fragments")
+        origins.append(f"{u.scheme}://{u.netloc.lower()}")
+    return tuple(dict.fromkeys(origins))
 
 def load_config(env: Mapping[str, str] = os.environ) -> Config:
     home = env.get("HOME", os.path.expanduser("~"))
@@ -90,4 +111,5 @@ def load_config(env: Mapping[str, str] = os.environ) -> Config:
                           f"{home}/.local/share/forge-guard/briefs"),
         limit_warn=float(env.get("FORGEGUARD_LIMIT_WARN", "0.95")),
         footer=env.get("FORGEGUARD_FOOTER", "⚙️ auto-review is advisory").strip(),
+        gitlab_link_origins=_link_origins(env.get("FORGEGUARD_GITLAB_LINK_ORIGINS", "")),
     )

@@ -300,6 +300,47 @@ def test_review_tick_posts_note_approves_and_notifies(tmp_path):
     assert not st.flagged("limit:Codex:weekly:unknown")
 
 @responses.activate
+def test_review_prose_links_normalized_at_publication_only(tmp_path):
+    _two_mrs()
+    for iid in (5, 6):
+        responses.get(f"{API}/projects/7/merge_requests/{iid}/notes", json=[],
+                      headers={"X-Next-Page": ""})
+        responses.post(f"{API}/projects/7/merge_requests/{iid}/notes", json={"id": iid})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json"),
+                           FORGEGUARD_GITLAB_LINK_ORIGINS="https://old.example"))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    verdict = {"verdict": "issues", "summary": "See https://old.example/g/p?x=1#note",
+               "issues": [{"severity": "high", "file": "x.py",
+                           "note": "Breaks https://old.example/g/p/-/issues/3"}],
+               "tests_opinion": "https://old.example/g/p/-/pipelines/4 and https://docs.example"}
+    original = json.dumps(verdict)
+    with patch("forgeguard.review.run_reviewer", return_value=verdict):
+        assert run_review_tick(GitLab(cfg), st, fk, cfg)["reviewed"] == 2
+    notes = [parse_qs(c.request.body)["body"][0] for c in responses.calls
+             if c.request.method == "POST" and c.request.url.endswith("/notes")]
+    assert len(notes) == 2
+    for note in notes:
+        assert "https://old.example" not in note
+        assert "https://gitlab.example.com/g/p?x=1#note" in note
+        assert "https://gitlab.example.com/g/p/-/issues/3" in note
+        assert "https://gitlab.example.com/g/p/-/pipelines/4" in note
+        assert "https://docs.example" in note
+    assert fk.posts[0][1][0][0]["text"] == "See https://gitlab.example.com/g/p?x=1#note"
+    assert json.dumps(verdict) == original
+
+@responses.activate
+def test_review_failure_prose_links_normalized(tmp_path):
+    _two_mrs()
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json"),
+                           FORGEGUARD_GITLAB_LINK_ORIGINS="https://old.example"))
+    st, fk = State.load(cfg.state_path), FakeFeishu()
+    with patch("forgeguard.review.run_reviewer",
+               side_effect=RuntimeError("See https://old.example/g/p?x=1#note")):
+        assert run_review_tick(GitLab(cfg), st, fk, cfg)["failed"] == 2
+    assert "https://old.example" not in str(fk.sent)
+    assert "https://gitlab.example.com/g/p?x=1#note" in str(fk.sent)
+
+@responses.activate
 def test_oversized_diff_skipped(tmp_path):
     responses.get(f"{API}/merge_requests", json=[{
         "iid": 6, "project_id": 7, "sha": "h2", "title": "big", "description": "",

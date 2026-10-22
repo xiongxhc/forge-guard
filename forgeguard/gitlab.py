@@ -1,5 +1,6 @@
 from __future__ import annotations
 from urllib.parse import urlsplit, urlunsplit
+import re
 import requests
 from .config import Config
 
@@ -11,6 +12,26 @@ class GitLabError(RuntimeError):
 def rebase_url(url: str, base: str) -> str:
     b, u = urlsplit(base), urlsplit(url)
     return urlunsplit((b.scheme, b.netloc, u.path, u.query, u.fragment))
+
+def rewrite_gitlab_links(text: str, cfg: Config) -> str:
+    """Rewrite explicit legacy origins in published prose; leave other URLs intact."""
+    if not cfg.gitlab_link_origins:
+        return text
+    base = urlsplit(cfg.gitlab_url)
+    target = f"{base.scheme}://{base.netloc}"
+
+    def replace(match):
+        url = match.group()
+        try:
+            u = urlsplit(url.rstrip(".,;:!"))
+        except ValueError:
+            return url
+        origin = f"{u.scheme}://{u.netloc.lower()}"
+        if origin not in cfg.gitlab_link_origins:
+            return url
+        return target + url[len(u.scheme) + 3 + len(u.netloc):]
+
+    return re.sub(r"https?://[^\s<>\"'`)]+", replace, text, flags=re.IGNORECASE)
 
 class GitLab:
     def __init__(self, cfg: Config, token: str | None = None):

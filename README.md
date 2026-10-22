@@ -87,7 +87,8 @@ launchd/cron wrappers before the CLI runs.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `FORGEGUARD_GITLAB_URL` | yes | — | GitLab base URL. Also the URL-rebase target — if your instance's configured hostname is unreachable (GitLab returns it in `web_url`), every URL surfaced anywhere is rebased to this host. |
+| `FORGEGUARD_GITLAB_URL` | yes | — | GitLab base URL. API-provided MR and commit links are rebased to this origin. |
+| `FORGEGUARD_GITLAB_LINK_ORIGINS` | no | empty | Comma-separated legacy GitLab origins, e.g. `https://gitlab.internal.example,http://gitlab.internal.example`. Exact matching origins in published review notes, Feishu summaries and review failure messages are rewritten to `FORGEGUARD_GITLAB_URL`; other URLs stay unchanged. Origins cannot contain credentials, paths, queries or fragments. This changes future output, not existing notes or source material. |
 | `FORGEGUARD_GITLAB_TOKEN` | yes | — | Primary PAT (admin for instance-wide coverage; see Requirements). |
 | `FORGEGUARD_GITLAB_EXTRA_TOKENS` | no | — | Comma-separated extra Maintainer tokens for groups the primary token can't reach. Sweep and review run once per token; projects are deduped by id, review MR cursors are per-token, and per-MR SHA cursors prevent duplicate reviews across overlapping token views. |
 | `FORGEGUARD_FEISHU_APP_ID` | yes | — | Feishu app ID for the tenant-access-token exchange. |

@@ -6,7 +6,7 @@ from urllib.parse import quote
 import requests
 from .brief import load_brief
 from .config import Config
-from .gitlab import GitLab, GitLabError, rebase_url
+from .gitlab import GitLab, GitLabError, rebase_url, rewrite_gitlab_links
 from .state import State
 
 MARKER = "<!-- forge-guard-review -->"
@@ -400,7 +400,7 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                             issues=json.dumps(v["issues"], ensure_ascii=False),
                             context=context, diff=diff), cfg)
                         _clear_unknown_limit(state, cfg)
-                    _upsert_note(gl, pid, iid, _render_note(v))
+                    _upsert_note(gl, pid, iid, rewrite_gitlab_links(_render_note(v), cfg))
                     if v["verdict"] == "clean":
                         try:
                             gl.post(f"/projects/{pid}/merge_requests/{iid}/approve")
@@ -414,7 +414,7 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                         title = f"📝 Review: {mr['title']} — {n} issue(s)"
                     feishu.notify_post(
                         title,
-                        [[{"tag": "text", "text": v["summary"]}],
+                        [[{"tag": "text", "text": rewrite_gitlab_links(v["summary"], cfg)}],
                          [{"tag": "text", "text": "MR: "},
                           {"tag": "a", "text": f"!{iid}", "href": mr_url}],
                          [{"tag": "text", "text": "head commit: "},
@@ -441,10 +441,10 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                         f"reviewed:{m['project_id']}:{m['iid']}") != m["sha"])
                     when = (fmt_reset(e.resets_at) if e.resets_at
                             else f"an unknown time ({e.provider} said: {e.detail})")
-                    feishu.notify(f"⏸️ forge-guard paused: {e.provider} "
+                    feishu.notify(rewrite_gitlab_links(f"⏸️ forge-guard paused: {e.provider} "
                                   f"{e.window.replace('_', '-')} "
                                   f"usage limit reached. Reviews resume at {when}; "
-                                  f"{waiting} MR(s) waiting will be reviewed then.")
+                                  f"{waiting} MR(s) waiting will be reviewed then.", cfg))
                 break
             except (RuntimeError, KeyError, GitLabError) as e:
                 out["failed"] += 1
@@ -453,8 +453,9 @@ def run_review_tick(gl: GitLab, state: State, feishu, cfg: Config,
                 if state.flag_once(f"reviewfail:{pid}:{iid}:{sha}"):
                     url = (rebase_url(mr["web_url"], cfg.gitlab_url)
                            if mr.get("web_url") else f"{pid}!{iid}")
-                    feishu.notify(f"⚠️ review failed: {url} — {type(e).__name__}: "
-                                  f"{str(e)[:160]} — will retry next tick")
+                    feishu.notify(rewrite_gitlab_links(
+                        f"⚠️ review failed: {url} — {type(e).__name__}: "
+                        f"{str(e)[:160]} — will retry next tick", cfg))
                 continue
         if max_updated and out["failed"] == 0:
             state.set_cursor(cursor_key, max_updated)
