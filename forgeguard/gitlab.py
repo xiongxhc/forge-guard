@@ -31,7 +31,7 @@ def rewrite_gitlab_links(text: str, cfg: Config) -> str:
             return url
         return target + url[len(u.scheme) + 3 + len(u.netloc):]
 
-    return re.sub(r"https?://[^\s<>\"'`)]+", replace, text, flags=re.IGNORECASE)
+    return re.sub(r"https?://[^\s<>\"'`)|]+", replace, text, flags=re.IGNORECASE)
 
 class GitLab:
     def __init__(self, cfg: Config, token: str | None = None):

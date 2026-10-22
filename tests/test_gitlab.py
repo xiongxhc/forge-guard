@@ -26,6 +26,25 @@ def test_review_text_rewrites_only_exact_configured_origins():
     assert rewrite_gitlab_links(text, cfg) == expected
     assert rewrite_gitlab_links(text, load_config(BASE)) == text
 
+def test_review_text_handles_adjacent_links_tables_and_ipv6_without_rewriting_nested_queries():
+    from forgeguard.gitlab import rewrite_gitlab_links
+    cfg = load_config(dict(BASE, FORGEGUARD_GITLAB_LINK_ORIGINS=
+                          "https://old.example,https://[2001:db8::1]:8443"))
+    text = (
+        "[one](https://old.example/a)[two](https://old.example/b)\n"
+        "|https://old.example/a|https://old.example/b|\n"
+        "https://[2001:db8::1]:8443/g/p?q=1#note\n"
+        "https://old.example/a?next=https://old.example/b#note\n"
+        "https://docs.example/a?next=https://old.example/b"
+    )
+    assert rewrite_gitlab_links(text, cfg) == (
+        "[one](https://gitlab.example.com/a)[two](https://gitlab.example.com/b)\n"
+        "|https://gitlab.example.com/a|https://gitlab.example.com/b|\n"
+        "https://gitlab.example.com/g/p?q=1#note\n"
+        "https://gitlab.example.com/a?next=https://old.example/b#note\n"
+        "https://docs.example/a?next=https://old.example/b"
+    )
+
 @responses.activate
 def test_get_all_paginates():
     responses.get("https://gitlab.example.com/api/v4/projects", json=[{"id": 1}],
