@@ -1,3 +1,4 @@
+import pytest
 import responses
 from urllib.parse import parse_qs, urlsplit
 from forgeguard.config import load_config
@@ -60,6 +61,61 @@ def test_force_push_alerts(tmp_path):
     assert links[0]["text"] == "t2"[:8]
     assert any("alice" in s.get("text", "") for s in flat)
     assert st.get_tip(7, "main") == "t2"
+
+@responses.activate
+def test_disconnected_history_advances_after_alert_and_next_sweep_is_clean(tmp_path):
+    _project_fixtures("t2")
+    responses.get(f"{API}/projects/7/repository/merge_base", status=404,
+                  json={"message": "404 Merge Base Not Found"})
+    for sha in ("t1", "t2"):
+        responses.get(f"{API}/projects/7/repository/commits/{sha}", json={"id": sha})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    state, notifier = State(), FakeFeishu()
+    state.set_tip(7, "main", "t1")
+    first = run_sweep(GitLab(cfg), state, notifier, cfg)
+    assert first["errors"] == 0 and first["force_push"] == 1
+    assert len(notifier.posts) == 1 and notifier.sent == []
+    restored = State.load(cfg.state_path)
+    assert restored.get_tip(7, "main") == "t2"
+    second = run_sweep(GitLab(cfg), restored, notifier, cfg)
+    assert second["errors"] == second["force_push"] == 0
+    assert len(notifier.posts) == 1
+
+@responses.activate
+def test_disconnected_history_failed_alert_preserves_saved_tip(tmp_path):
+    import pytest
+    _project_fixtures("t2")
+    responses.get(f"{API}/projects/7/repository/merge_base", status=404,
+                  json={"message": "404 Merge Base Not Found"})
+    for sha in ("t1", "t2"):
+        responses.get(f"{API}/projects/7/repository/commits/{sha}", json={"id": sha})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    state, notifier = State(), FakeFeishu()
+    state.set_tip(7, "main", "t1")
+    def fail(*args, **kwargs):
+        raise RuntimeError("notification unavailable")
+    notifier.notify_post = fail
+    with pytest.raises(RuntimeError, match="notification unavailable"):
+        run_sweep(GitLab(cfg), state, notifier, cfg)
+    assert State.load(cfg.state_path).get_tip(7, "main") == "t1"
+
+@pytest.mark.parametrize("missing", ["t1", "t2"])
+@responses.activate
+def test_disconnected_history_missing_commit_preserves_saved_tip(tmp_path, missing):
+    _project_fixtures("t2")
+    responses.get(f"{API}/projects/7/repository/merge_base", status=404,
+                  json={"message": "404 Merge Base Not Found"})
+    for sha in ("t1", "t2"):
+        responses.get(f"{API}/projects/7/repository/commits/{sha}",
+                      status=404 if sha == missing else 200,
+                      json={"message": "404 Commit Not Found"} if sha == missing else {"id": sha})
+    cfg = load_config(dict(BASE, FORGEGUARD_STATE=str(tmp_path / "s.json")))
+    state, notifier = State(), FakeFeishu()
+    state.set_tip(7, "main", "t1")
+    result = run_sweep(GitLab(cfg), state, notifier, cfg)
+    assert result["errors"] == 1 and result["force_push"] == 0
+    assert notifier.posts == [] and len(notifier.sent) == 1
+    assert State.load(cfg.state_path).get_tip(7, "main") == "t1"
 
 @responses.activate
 def test_failing_project_tolerated_and_alerted(tmp_path):

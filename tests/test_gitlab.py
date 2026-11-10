@@ -1,10 +1,25 @@
+import pytest
 import responses
 from forgeguard.config import load_config
-from forgeguard.gitlab import GitLab, rebase_url
+from forgeguard.gitlab import GitLab, GitLabError, rebase_url
 from tests.test_config import BASE
 
 def _gl():
     return GitLab(load_config(BASE))
+
+@pytest.mark.parametrize("body,message", [
+    ('{"message":"404 Merge Base Not Found"}', "404 Merge Base Not Found"),
+    ('{"message":{"detail":"private upstream detail"}}', None),
+    ('["private upstream detail"]', None),
+    ('<html>private upstream detail</html>', None),
+])
+@responses.activate
+def test_get_error_preserves_only_structured_string_message(body, message):
+    responses.get("https://gitlab.example.com/api/v4/boom", body=body, status=404)
+    with pytest.raises(GitLabError) as failure:
+        _gl().get("/boom")
+    assert failure.value.message == message
+    assert str(failure.value) == "GitLab 404 on /boom"
 
 def test_rebase_url_forces_configured_host():
     assert rebase_url("https://gitlab.internal.example/g/p/-/commit/abc",
@@ -72,3 +87,22 @@ def test_token_override():
     from tests.test_config import BASE
     gl = GitLab(load_config(dict(BASE)), token="other")
     assert gl.s.headers["PRIVATE-TOKEN"] == "other"
+
+def test_bounded_download_streams_and_closes_before_accumulating(monkeypatch):
+    from types import SimpleNamespace
+    closed = []
+    chunks = []
+    def stream(chunk_size):
+        for chunk in [b'abcd', b'efgh', b'never']:
+            chunks.append(chunk)
+            yield chunk
+    response = SimpleNamespace(status_code=200, iter_content=stream,
+                               close=lambda: closed.append(True))
+    gl = _gl()
+    def get(url, **kwargs):
+        assert kwargs['stream'] is True
+        return response
+    monkeypatch.setattr(gl.s, 'get', get)
+    assert gl.get_bytes_bounded('/file', 5) is None
+    assert chunks == [b'abcd', b'efgh']
+    assert closed == [True]

@@ -91,6 +91,10 @@ def main(argv=None) -> int:
     if not args or args[0] not in {"sweep", "review", "brief", "inject-gate"}:
         print("usage: forgeguard sweep|review|brief|inject-gate", file=sys.stderr)
         return 2
+    if args[0] == "inject-gate":
+        print("inject-gate is not implemented; follow the manual pilot runbook "
+              "in docs/quality-gate-setup.md", file=sys.stderr)
+        return 2
     cfg = load_config()
     state = State.load(cfg.state_path)
     clients = [GitLab(cfg)] + [GitLab(cfg, token=t) for t in cfg.extra_tokens]
@@ -121,8 +125,6 @@ def main(argv=None) -> int:
                 total[k] += v
         print(total)
         return 0
-    from .review import inject_gate
-    return inject_gate(clients[0], cfg, apply="--apply" in args)
 
 if __name__ == "__main__":
     raise SystemExit(main())
