@@ -37,6 +37,21 @@ def test_extra_tokens_parsed():
 def test_extra_tokens_default_empty():
     assert load_config(dict(BASE)).extra_tokens == []
 
+def test_gitlab_link_origins_are_optional_and_normalized():
+    assert load_config(BASE).gitlab_link_origins == ()
+    cfg = load_config(dict(BASE, FORGEGUARD_GITLAB_LINK_ORIGINS=
+                          "https://OLD.example/, http://old.example:8080"))
+    assert cfg.gitlab_link_origins == ("https://old.example", "http://old.example:8080")
+
+@pytest.mark.parametrize("origin", [
+    "ftp://old.example", "old.example", "https://", "https://old.example/path",
+    "https://old.example?x=1", "https://old.example#x", "https://user@old.example",
+    "https://old.example:bad", "https://old.example:99999", "https://old .example",
+])
+def test_gitlab_link_origins_reject_non_origins(origin):
+    with pytest.raises(SystemExit, match="FORGEGUARD_GITLAB_LINK_ORIGINS"):
+        load_config(dict(BASE, FORGEGUARD_GITLAB_LINK_ORIGINS=origin))
+
 def test_branch_match_exact_and_glob():
     cfg = load_config(dict(BASE, FORGEGUARD_BRANCHES="dev,uat,*/dev,*/uat"))
     assert cfg.branch_match("dev")
